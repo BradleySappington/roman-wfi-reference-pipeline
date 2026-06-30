@@ -1,9 +1,11 @@
 import logging
-
+import os
 import asdf
 import numpy as np
 from astropy import units as u
+from concurrent.futures import ProcessPoolExecutor
 from roman_datamodels.datamodels import FlatRefModel
+import glob
 
 from wfi_reference_pipeline.constants import (
     SCI_PIXEL_X_COUNT,
@@ -235,7 +237,10 @@ class Flat(ReferenceType):
             # Trying to avoid oversampling
             nsamples = max(1, int(self.num_files / 2))
         for fl in range(0, self.num_files):
-            tmp = asdf.open(self.file_list[fl])
+            fname = self.file_list[fl]
+            tmp = asdf.open(fname, lazy_tree=True)
+            sca = int(tmp["roman"]["meta"]["instrument"]["detector"][-2:])
+            t_start = tmp["roman"]["meta"]["exposure"]["start_time"]
             if len(np.shape(tmp.tree["roman"]["data"])) != 2:
                 raise ValueError("The input data is expected to be a ramp (2D).\
                                   Please calculate or process your data first.")
@@ -260,14 +265,20 @@ class Flat(ReferenceType):
 
             # Sub-out infs by nans to ignore them safely
             tmp_cube[np.isinf(tmp_cube)] = np.nan
-            # We will normalize each L2 image by the median rate (ignoring infs/NaNs)
-            median = np.nanmedian(tmp_cube)
-            # We will only consider images with median rates between "lo" and "hi"
-            if (median >= lo) & (median <= hi):
-                rate_image_array[fl, :, :] = tmp_cube/median  # Normalized L2
-            else:
-                # This is a bit wasteful memory wise...
+            # Check if the majority of pixels are not valid and skip if so
+            _ngood = np.count_nonzero(np.isfinite(tmp_cube))
+            if _ngood/tmp_cube.size < 0.2:
                 rate_image_array[fl, :, :] = np.nan*np.ones_like(tmp_cube)
+                print('only', _ngood/tmp_cube.size, 'good pixels. Skipping...')
+            else:
+                median = compute_fp_median(self.file_list[fl], npixx, npixy, t_start, sca, tmp_cube)
+                print(median, np.nanmedian(tmp_cube), lo, hi)
+                # We will only consider images with median rates between "lo" and "hi"
+                if (median >= lo) & (median <= hi):
+                    rate_image_array[fl, :, :] = tmp_cube/median  # Normalized L2
+                else:
+                    # This is a bit wasteful memory wise...
+                    rate_image_array[fl, :, :] = np.nan*np.ones_like(tmp_cube)
         # Compute "master" flat as median of individual flats pixel-by-pixel
         flat_image = np.nanmedian(rate_image_array, axis=0)
         self.flat_image = flat_image  # populate the attribute
@@ -493,3 +504,63 @@ class Flat(ReferenceType):
             except (ValueError, TypeError) as e:
                 logging.error(f"Unable to make_ramp_cube_model with error {e}")
                 # TODO - DISCUSS HOW TO HANDLE ERRORS LIKE THIS, ASSUME WE CAN'T JUST LOG IT - For cube class discussion - should probably raise the error
+
+
+def _process_single_sca(ifp, sca, fname, tmp_cube, t_start):
+    """Worker function to process a single SCA index."""
+    if ifp == sca:
+        return ifp - 1, tmp_cube
+        
+    fname_aux = fname.replace(f'WFI{sca:02d}', f'WFI{ifp:02d}')
+    
+    # Resolve timestamp mismatch if file does not exist
+    if not os.path.exists(fname_aux):
+        timestamp = fname_aux.split('/')[-1].split('_')[3]
+        _files_here = glob.glob(fname_aux.replace(timestamp, '*'))
+        for _f_h in _files_here:
+            # Open with minimal overhead to check headers
+            with asdf.open(_f_h, lazy_tree=True, lazy_load=True) as _ff:
+                t_here = _ff["roman"]["meta"]["exposure"]["start_time"]
+                # Assuming t_start and t_here are astropy Time objects
+                # If they are strings, you will need to parse them first
+                dt = t_here - t_start 
+            if np.abs(dt.sec) < 10:
+                fname_aux = _f_h
+                break
+                
+    print(f"Processing SCA {ifp:02d}: {fname_aux}")
+    
+    # Read and clean the data
+    if os.path.exists(fname_aux):
+        with asdf.open(fname_aux, lazy_tree=True) as tmp:
+            _data = tmp["roman"]["data"]
+            if isinstance(_data, u.Quantity):
+                _data = _data.value
+            _data = np.array(_data, dtype=np.float32) # Ensure correct dtype
+            _data[np.isinf(_data)] = np.nan
+            return ifp - 1, _data
+    else:
+        # Fallback if no matching file could be found
+        return ifp - 1, np.full((tmp_cube.shape[0], tmp_cube.shape[1]), np.nan, dtype=np.float32)
+
+def compute_fp_median(fname, npixx, npixy, t_start, sca, tmp_cube):
+    # Note: Added tmp_cube to the arguments as it was missing in the original signature
+    tmp_fp = np.zeros((18, npixx, npixy), dtype=np.float32)
+    
+    # Use ProcessPoolExecutor for CPU-bound/IO-bound ASDF parsing
+    # Automatically scales to available CPU cores
+    with ProcessPoolExecutor() as executor:
+        # Submit jobs for all 18 SCAs
+        futures = [
+            executor.submit(_process_single_sca, ifp, sca, fname, tmp_cube, t_start)
+            for ifp in range(1, 19)
+        ]
+        
+        # Collect results as they finish
+        for future in futures:
+            idx, data_array = future.result()
+            tmp_fp[idx, :, :] = data_array
+
+    median = np.nanmedian(tmp_fp)
+    return median
+
