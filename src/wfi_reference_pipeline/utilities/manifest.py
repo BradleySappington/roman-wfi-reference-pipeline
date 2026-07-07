@@ -1,86 +1,142 @@
 import pandas as pd
 from roman_datamodels import datamodels as rdd
 
+# ----------------------------------------------------------------------
+# Define all metadata fields you want to collect here and check for
+# when creating the manifest. Each line can be a single instance in a
+# ref type that has a unique meta field name.
+#
+# The dictionary key becomes the DataFrame column name.
+# The tuple is the path through the metadata tree.
+# ----------------------------------------------------------------------
 
-def make_manifest(files):
+META_FIELDS = {
+    "reftype": ("reftype",),
+    "author": ("author",),
+    "description": ("description",),
+    "pedigree": ("pedigree",),
+    "origin": ("origin",),
+    "telescope": ("telescope",),
+    "useafter": ("useafter",),
+    "detector": ("instrument", "detector"),
+    "instrument_name": ("instrument", "name"),
+    "optical_element": ("instrument", "optical_element"),
+    "exptype": ("exposure", "type"),
+    "p_exptype": ("exposure", "p_exptype"),
+    "input_units": ("input_units",),
+    "output_units": ("output_units",),
+}
+
+
+def get_nested_value(meta, path, default="N/A"):
     """
-    Function for returning a pandas dataframe containing important
-    metadata inside Roman reference files.
+    Safely retrieve a nested metadata value.
 
     Parameters
     ----------
-    files: list of strings
-        List of reference file names from which to get metadata.
+    meta : dict-like
+        Roman metadata tree.
+    path : tuple
+        Tuple describing the path to the desired value.
+    default : object
+        Value returned if the key doesn't exist.
 
     Returns
     -------
-    df: pandas.DataFrame
-        Pandas dataframe containing the file names, reftypes, detector names,
-        exposure types, optical elements, MA table names, and
-        useafter dates for the input file list.
+    object
+        Metadata value or default.
+    """
+    value = meta
+
+    for key in path:
+        try:
+            value = value[key]
+        except (KeyError, TypeError):
+            return default
+
+    return value
+
+
+def make_manifest(files):
+    """
+    Create a pandas DataFrame containing selected metadata from a list of
+    Roman reference files.
+
+    Parameters
+    ----------
+    files : list[str]
+        List of ASDF reference files.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per reference file and one column for each metadata field
+        defined in ``META_FIELDS``.
+
+    Examples
+    --------
+    Create a manifest from all ASDF files in the current directory::
+
+    from wfi_reference_pipeline.utilities.manifest import make_manifest, print_manifest, print_meta_fields_together
+    import glob, asdf
+    files = glob.glob("*.asdf")
+    manifest = make_manifest(files)
+
+    View the DataFrame::
+    print(manifest)
+
+    Print one file's metadata at a time::
+    print_manifest(manifest)
+
+    Print values grouped by metadata field::
+    print_meta_fields_together(manifest)
     """
 
-    useafter, exptype, element, detector = [], [], [], []
-    ma_name, reftype, description, pedigree = [], [], [], []
-
-    for file in files:
-        with rdd.open(file) as rf:
+    files.sort()
+    rows = []
+    for filename in files:
+        with rdd.open(filename) as rf:
             meta = rf.meta
 
-        reftype.append(meta['reftype'])
-        useafter.append(meta['useafter'].datetime.strftime('%Y-%m-%d %H:%M:%S'))
-        detector.append(meta['instrument']['detector'])
-        description.append(meta['description'])
-        pedigree.append(meta['pedigree'])
-        try:
-            exptype.append(meta['exposure']['type'])
-        except KeyError:
-            exptype.append('N/A')
-        try:
-            element.append(meta['instrument']['optical_element'])
-        except KeyError:
-            element.append('N/A')
-        try:
-            ma_name.append(meta['observation']['ma_table_name'])
-        except KeyError:
-            ma_name.append('N/A')
+        row = {"file": filename}
+        for column, path in META_FIELDS.items():
+            value = get_nested_value(meta, path)
+            # Convert Time objects into readable strings
+            if column == "useafter" and value != "N/A":
+                value = value.datetime.strftime("%Y-%m-%d %H:%M:%S")
+            # Convert long lists into something printable
+            elif isinstance(value, list):
+                value = ", ".join(str(v) for v in value)
 
-    df = pd.DataFrame({'file': files,
-                       'reftype': reftype,
-                       'detector': detector,
-                       'descirption': description,
-                       'useafter': useafter,
-                       'pedigree': pedigree,
-                       'exptype': exptype,
-                       'optical_element': element,
-                       'ma_table_name': ma_name}
-                      )
-    print(df)
+            row[column] = value
+
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
     return df
-
 
 def print_manifest(df):
     """
-    Prints each file's meta data separated by a line.
-    """
-    for index, row in df.iterrows():
-        print(f"File: {row['file']}")
-        print(f"Reftype: {row['reftype']}")
-        print(f"Detector: {row['detector']}")
-        print(f"Description: {row['descirption']}")
-        print(f"Use After: {row['useafter']}")
-        print(f"Exptype: {row['exptype']}")
-        print(f"Optical Element: {row['optical_element']}")
-        print(f"MA Table Name: {row['ma_table_name']}")
-        print('-' * 40)  # Separator line between rows
+    Print metadata for each file.
 
+
+
+    """
+    for _, row in df.iterrows():
+        print(f"File: {row['file']}")
+        for column in df.columns:
+            if column == "file":
+                continue
+            print(f"{column}: {row[column]}")
+        print("-" * 60)
 
 def print_meta_fields_together(df):
     """
-    Prints the meta of every file by key in groups and separates them by a line.
+    Print each metadata field grouped together.
     """
-    for col in df.columns:
-        print(f"{col.capitalize()}:")
-        for value in df[col]:
+    for column in df.columns:
+        print(f"{column}")
+        for value in df[column]:
             print(f"  {value}")
-        print('-' * 40)   # Separator line between columns
+        print("-" * 60)
