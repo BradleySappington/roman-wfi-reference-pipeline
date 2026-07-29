@@ -10,6 +10,9 @@ from roman_datamodels import dqflags
 from wfi_reference_pipeline.constants import (
     DETECTOR_PIXEL_X_COUNT,
     DETECTOR_PIXEL_Y_COUNT,
+    REF_TYPE_FGS_MASK,
+    REF_TYPE_MASK,
+    WFI_MASK_REF_TYPES,
     WFI_REF_TYPES_WITHOUT_INPUT_DATA,
 )
 
@@ -32,6 +35,8 @@ class ReferenceType(ABC):
         Path to the output file where the reference data will be saved.
     clobber : bool, optional
         If True, overwrites the existing outfile without warning.
+    mask_size : tuple, optional
+        Expected detector dimensions.
     """
 
     def __init__(self,
@@ -124,10 +129,18 @@ class ReferenceType(ABC):
                     f"Output file '{self.outfile}' already exists and clobber=False."
                 )
 
-    def generate_outfile(self, datamodel_tree=None, file_permission=0o666):
+    def generate_outfile(self, 
+                         datamodel_tree=None, 
+                         file_permission=0o666):
         """
         Writes the reference file object to the specified asdf outfile.
         Supports both ASDF trees and Roman DataModel objects.
+
+        MASK reference files use Roman DataModels and are written using
+        the save() method.
+
+        FGS_MASK reference files do not have a Roman DataModel and are
+        written as ASDF trees.
 
         Parameters
         ----------
@@ -141,11 +154,11 @@ class ReferenceType(ABC):
         if self.outfile is None:
             raise ValueError("Output file path 'outfile' is not specified.")
 
-        # Resolve data model or tree
-        obj = datamodel_tree if datamodel_tree else self.populate_datamodel_tree()
-
         # check to see if file currently exists
         self.check_outfile()
+
+        # Resolve data model or tree
+        obj = datamodel_tree if datamodel_tree else self.populate_datamodel_tree()
 
         # ============================================================
         # CASE 1: Roman DataModel 
@@ -180,6 +193,252 @@ class ReferenceType(ABC):
         If applicable, update the reference file data quality array.
         """
         pass
+
+    @abstractmethod
+    def populate_datamodel_tree(self):
+        """
+        Enforcing data model validation before writing file and used in schema testing.
+        """
+        pass
+
+
+
+class ReferenceTypeMask(ABC):
+    """
+    Base class for MASK and FGS_MASK reference files. This class supports two workflows 
+    for creating a mask reference file.
+
+    Monthly Workflow
+    ----------------
+    A new superdark and superslope are generated from required input files.
+
+    Required:
+        - dark_filelist
+        - flat_filelist
+
+    Weekly Workflow
+    ---------------
+    A new superdark is generated while an existing superslope is reused.
+
+    Required:
+        - dark_filelist
+        - input_super_rate
+
+    Parameters
+    ----------
+    meta_data: object
+        Metadata object whose reference_type must be one of
+        WFI_MASK_REF_TYPES.
+    dark_filelist: list
+        List of dark files used to create a superdark.
+    flat_filelist: list, optional
+        List of flat files used to create a superslope.
+        Required for the monthly workflow.
+    input_super_rate: numpy.ndarray, optional
+        Existing superslope image.
+        Required for the weekly workflow.
+    outfile: str, optional
+        Output ASDF filename.
+    clobber: bool, optional
+        Overwrite an existing output file.
+    mask_size: tuple, optional
+        Expected detector dimensions.
+    """
+
+    def __init__(
+        self,
+        meta_data,
+        dark_filelist,
+        flat_filelist=None,
+        input_super_rate=None,
+        outfile=None,
+        clobber=False,
+        mask_size=(
+            DETECTOR_PIXEL_X_COUNT,
+            DETECTOR_PIXEL_Y_COUNT,
+        ),
+    ):
+
+        self._validate_meta_data(meta_data)
+
+        self._validate_file_list(
+            dark_filelist,
+            "dark_filelist",
+        )
+
+        self._validate_mask_size(mask_size)
+
+        if not isinstance(clobber, bool):
+            raise TypeError(
+                "'clobber' must be a boolean."
+            )
+
+        monthly = flat_filelist is not None
+        weekly = input_super_rate is not None
+
+        if monthly == weekly:
+            raise ValueError(
+                "Specify exactly one workflow:\n"
+                "  Monthly : flat_filelist must be provided\n"
+                "  Weekly  : input_superslope must be provided"
+            )
+
+        self.workflow = "monthly" if monthly else "weekly"
+
+        if monthly:
+            self._validate_file_list(
+                flat_filelist,
+                "flat_filelist",
+            )
+
+        if weekly:
+            self._validate_image(
+                input_super_rate,
+                "input_super_rate",
+                mask_size,
+            )
+
+        self.meta_data = meta_data
+
+        self.dark_filelist = dark_filelist
+        self.flat_filelist = flat_filelist
+        self.input_super_rate = input_super_rate
+
+        self.outfile = outfile
+        self.clobber = clobber
+        self.mask_size = mask_size
+
+        self.dqflag_defs = dqflags.pixel
+
+    def _validate_meta_data(self, meta_data):
+        """Validate the meta data object."""
+
+        if not hasattr(meta_data, "reference_type"):
+            raise TypeError(
+                "'meta data' must contain a 'reference_type' attribute."
+            )
+
+        if meta_data.reference_type not in WFI_MASK_REF_TYPES:
+            raise ValueError(
+                f"Reference type '{meta_data.reference_type}' is not "
+                "supported by MaskBase."
+            )
+
+
+    def _validate_file_list(self, file_list, name):
+        """Validate a file list."""
+
+        if not isinstance(file_list, list):
+            raise TypeError(
+                f"'{name}' must be a list."
+            )
+
+        if len(file_list) == 0:
+            raise ValueError(
+                f"'{name}' must contain at least one file."
+            )
+
+        if not all(
+            isinstance(filename, str)
+            for filename in file_list
+        ):
+            raise TypeError(
+                f"'{name}' must contain only strings."
+            )
+
+    def _validate_image(
+        self,
+        image,
+        image_name,
+        expected_shape,
+    ):
+        """Validate an input image."""
+
+        if not isinstance(image, np.ndarray):
+            raise TypeError(
+                f"'{image_name}' must be a numpy.ndarray."
+            )
+
+        if image.ndim != 2:
+            raise ValueError(
+                f"'{image_name}' must be a 2D array."
+            )
+
+        if image.shape != expected_shape:
+            raise ValueError(
+                f"'{image_name}' must have shape "
+                f"{expected_shape}. Got {image.shape}."
+            )
+
+    def check_outfile(self):
+        """
+        Check if the output file exists, and take appropriate action.
+        """
+        if self.outfile is None:
+            raise ValueError("Output file path 'outfile' is not specified.")
+
+        if os.path.exists(self.outfile):
+            if self.clobber:
+                os.remove(self.outfile)
+                logging.info(f"Existing file '{self.outfile}' removed due to clobber=True.")
+            else:
+                raise FileExistsError(
+                    f"Output file '{self.outfile}' already exists and clobber=False."
+                )
+
+    def generate_outfile(self, 
+                         datamodel_tree=None, 
+                         file_permission=0o666):
+        """
+        Writes the reference file object to the specified asdf outfile.
+        Supports both ASDF trees and Roman DataModel objects.
+
+        Parameters
+        ----------
+        datamodel_tree: dict, default = None
+            A reftype specific dictionary built from roman data models
+        file_permission: octal string, default = 0o666
+            Default file permission is rw-rw-rw- in symbolic notation meaning:
+            owner, group and others have read and write permissions.
+
+        """
+        if self.outfile is None:
+            raise ValueError("Output file path 'outfile' is not specified.")
+
+        # Resolve data model or tree
+        obj = datamodel_tree if datamodel_tree else self.populate_datamodel_tree()
+
+        # check to see if file currently exists
+        self.check_outfile()
+
+        if self.metadata.reference_type == REF_TYPE_MASK:
+            if not hasattr(obj, "save"):
+                raise TypeError(
+                    "MASK reference type requires a Roman DataModel "
+                    "object with a save() method."
+                )
+            logging.info(
+                "Writing MASK reference using Roman DataModel save()."
+            )
+            obj.save(self.outfile)
+
+        elif self.metadata.reference_type == REF_TYPE_FGS_MASK:
+            logging.info(
+                "Writing FGS_MASK reference using ASDF writer."
+            )
+            af = asdf.AsdfFile()
+            af.tree = {
+                "roman": obj
+            }
+            af.write_to(self.outfile)
+
+        else:
+            raise ValueError(
+                f"Unsupported reference type '{self.metadata.reference_type}' using ReferenceTypeMask()."
+            )
+
+        os.chmod(self.outfile, file_permission)
+        logging.info(f"Saved {self.outfile}")
 
     @abstractmethod
     def populate_datamodel_tree(self):
