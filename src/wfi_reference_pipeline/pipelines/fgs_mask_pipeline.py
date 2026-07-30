@@ -3,7 +3,6 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-import asdf
 import numpy as np
 import roman_datamodels as rdm
 from astropy.io import fits
@@ -17,8 +16,6 @@ from romancal.wfi18_transient import WFI18TransientStep
 
 from wfi_reference_pipeline.config.config_access import get_pipelines_config
 from wfi_reference_pipeline.constants import (
-    DETECTOR_PIXEL_X_COUNT,
-    DETECTOR_PIXEL_Y_COUNT,
     REF_TYPE_FGS_MASK,
 )
 from wfi_reference_pipeline.pipelines.pipeline import Pipeline

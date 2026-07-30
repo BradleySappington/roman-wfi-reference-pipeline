@@ -9,7 +9,7 @@ from wfi_reference_pipeline.constants import WFI_TYPE_IMAGE
 from wfi_reference_pipeline.reference_types.readnoise.readnoise import ReadNoise
 from wfi_reference_pipeline.resources.wfi_meta_fgs_mask import WFIMetaFGSMask
 
-from ..reference_type import ReferenceType
+from ..reference_type import ReferenceTypeMask
 
 
 class FGSFlags(np.uint32, Enum):

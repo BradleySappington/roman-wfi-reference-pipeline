@@ -1,10 +1,9 @@
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
-import os
-from astropy.convolution import Box2DKernel, convolve
 from roman_datamodels.datamodels import MaskRefModel
 from roman_datamodels.dqflags import pixel as dqflags
 from scipy.optimize import curve_fit

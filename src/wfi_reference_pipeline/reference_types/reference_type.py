@@ -410,10 +410,10 @@ class ReferenceTypeMask(ABC):
 
         ni = np.array([len(t) for t in readtimes])
         ti = np.array([np.mean(t) for t in readtimes])
-        N = np.sum(ni)
-        Nt = np.sum(ni * ti)
-        Ntt = np.sum(ni * ti**2)
-        weights = (N * ni * ti - Nt * ni) / (N * Ntt - Nt**2)
+        n = np.sum(ni)
+        nt = np.sum(ni * ti)
+        ntt = np.sum(ni * ti**2)
+        weights = (n * ni * ti - nt * ni) / (n * ntt - nt**2)
 
         data = d[0] if d.ndim == 4 else d
 
