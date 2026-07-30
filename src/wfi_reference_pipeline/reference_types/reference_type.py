@@ -69,8 +69,6 @@ class ReferenceType(ABC):
         if not have_input and meta_data.reference_type not in WFI_REF_TYPES_WITHOUT_INPUT_DATA:
             raise ValueError(f"Reference File type {meta_data.reference_type} requires input data in the form of a file_list or ref_type_data.")
 
-
-
         # Allow for input string use_after to be converted to astropy time object.
         if hasattr(meta_data, "use_after") and isinstance(meta_data.use_after, str):
             meta_data.use_after = Time(meta_data.use_after)
@@ -248,7 +246,7 @@ class ReferenceTypeMask(ABC):
     def __init__(
         self,
         meta_data,
-        dark_filelist,
+        dark_filelist=None,
         flat_filelist=None,
         input_super_rate=None,
         outfile=None,
@@ -261,12 +259,7 @@ class ReferenceTypeMask(ABC):
 
         self._validate_meta_data(meta_data)
 
-        self._validate_file_list(
-            dark_filelist,
-            "dark_filelist",
-        )
-
-        self._validate_mask_size(mask_size)
+        # self._validate_mask_size(mask_size)
 
         if not isinstance(clobber, bool):
             raise TypeError(
@@ -274,14 +267,14 @@ class ReferenceTypeMask(ABC):
             )
 
         monthly = flat_filelist is not None
-        weekly = input_super_rate is not None
+        weekly = dark_filelist is not None
 
-        if monthly == weekly:
-            raise ValueError(
-                "Specify exactly one workflow:\n"
-                "  Monthly : flat_filelist must be provided\n"
-                "  Weekly  : input_superslope must be provided"
-            )
+        # if monthly == weekly:
+        #     raise ValueError(
+        #         "Specify exactly one workflow:\n"
+        #         "  Monthly : flat_filelist must be provided\n"
+        #         "  Weekly  : input_superslope must be provided"
+        #     )
 
         self.workflow = "monthly" if monthly else "weekly"
 
@@ -292,11 +285,16 @@ class ReferenceTypeMask(ABC):
             )
 
         if weekly:
-            self._validate_image(
-                input_super_rate,
-                "input_super_rate",
-                mask_size,
+            self._validate_file_list(
+                        dark_filelist,
+                        "dark_filelist",
             )
+            if input_super_rate is not None:
+                self._validate_image(
+                    input_super_rate,
+                    "input_super_rate",
+                    mask_size,
+                )
 
         self.meta_data = meta_data
 
@@ -309,6 +307,129 @@ class ReferenceTypeMask(ABC):
         self.mask_size = mask_size
 
         self.dqflag_defs = dqflags.pixel
+
+
+    def prep_superdark(self, prep_path):
+        """
+        Create a superdark from the prepped self.dark_filelist files.
+        This function uses the DarkPipeline superdark code. 
+
+        Parameters
+        ----------
+        prep_path: str
+            Path to save the superdark. Superdarks are saved by default.
+        """
+        from wfi_reference_pipeline.pipelines.dark_pipeline import DarkPipeline
+        # Need the number of reads to run the superdark code
+        nreads = self._get_nreads()
+
+        # Setting the superdark path to be in the same dir as the prepped files
+        detector = self.meta_data.instrument_detector
+
+        superdark_filename = f"superdark_for_{self.meta_data.reference_type}_{detector}.asdf"
+        self.superdark_path = os.path.join(prep_path, superdark_filename)
+
+        logging.info("Creating superdark and writing file to", self.superdark_path)
+
+        # Creating the dark pipeline object and creating the superdark
+        dark_pipe = DarkPipeline(detector)
+        dark_pipe.prep_superdark_file(
+            short_file_list=self.dark_filelist,
+            outfile=self.superdark_path,
+            short_dark_num_reads=nreads,
+        )
+
+        # Return the superdark
+        return self._load_superdark()
+
+
+    def _get_nreads(self):
+        """Using the first file in self.dark_filelist, get the number of reads in the ramp."""
+        if not self.dark_filelist:
+            raise TypeError("No prepped dark files found in self.dark_filelist. Cannot make superdark.")
+        
+        with asdf.open(self.dark_filelist[0], memmap=True) as af:
+            data = af["roman"]["data"]
+            dark = data.value if hasattr(data, "value") else data
+            nreads = dark.shape[0]
+
+        return nreads
+    
+
+    def _load_superdark(self):
+        """Load the newly-created superdark file"""
+        logging.info("Loading superdark from", self.superdark_path)
+
+        with asdf.open(self.superdark_path, memmap=True) as af:
+            data = af["roman"]["data"]
+            superdark = data.value if hasattr(data, "value") else data
+            return np.asarray(superdark)
+    
+
+    def prep_super_rate(self):
+        """
+        This function creates a super rate image by averaging the inputted flat rate files.
+        """
+        rate_images = np.zeros((len(self.flat_filelist), DETECTOR_PIXEL_Y_COUNT, DETECTOR_PIXEL_X_COUNT))
+
+        for i, file in enumerate(self.flat_filelist):
+            with asdf.open(file, memmap=True) as af:
+                
+                data = af["roman"]["data"]
+                data = data.value if hasattr(data, "value") else data
+
+                readtimes = [[3.16247 * t] for t in range(len(data))]
+
+                # TODO: are we getting rate images ? 
+                rate_images[i, :, :] = self._slopes_uniform_weights(data, readtimes)
+
+        # Calculating the super rate image
+        return np.nanmean(rate_images, axis=0)
+
+
+    def _slopes_uniform_weights(self, d, readtimes, tensor=True):
+        """
+        Compute ramp slopes using uniform (read-noise-limited) weights.
+
+        Parameters
+        ----------
+        input_model : RampModel
+            Model containing ramps.
+
+        Returns
+        -------
+        slopes : ndarray
+            The slope for each pixel under uniform weighting, which is optimal
+            in the read noise limit.  All flags, including saturation and
+            jump, will be ignored.
+        """
+
+        # The lines below compute the weight for each resultant in the case
+        # of uniform weighting (a diagonal covariance matrix consisting only
+        # of read noise).
+
+        ni = np.array([len(t) for t in readtimes])
+        ti = np.array([np.mean(t) for t in readtimes])
+        N = np.sum(ni)
+        Nt = np.sum(ni * ti)
+        Ntt = np.sum(ni * ti**2)
+        weights = (N * ni * ti - Nt * ni) / (N * Ntt - Nt**2)
+
+        data = d[0] if d.ndim == 4 else d
+
+        if tensor:
+            return np.tensordot(weights, data, axes=(0, 0))
+
+        return np.sum(weights[:, None, None] * data, axis=0)
+
+
+    def normalize_super_rate_image(self, super_rate_image):
+        """
+        Computes the normalized super rate image by dividing the super rate
+        image by its nanmean.
+        """
+        return super_rate_image / np.nanmean(super_rate_image)
+
 
     def _validate_meta_data(self, meta_data):
         """Validate the meta data object."""

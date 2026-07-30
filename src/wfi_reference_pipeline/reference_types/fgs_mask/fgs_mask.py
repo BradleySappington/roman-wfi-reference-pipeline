@@ -12,8 +12,6 @@ from wfi_reference_pipeline.resources.wfi_meta_fgs_mask import WFIMetaFGSMask
 from ..reference_type import ReferenceType
 
 
-# SRG: Add comments, put in order. Remove TFPN
-# How to coordinate w RDMT is more important than choosing a base for bitwi 
 class FGSFlags(np.uint32, Enum):
     """
     These are the flags that are used ONLY FOR THE FGS MASK.
@@ -33,42 +31,47 @@ class FGSFlags(np.uint32, Enum):
     HOT_FROM_GW = 2**29
 
 
-class FGSMask(ReferenceType):
+class FGSMask(ReferenceTypeMask):
     """
-    Class FGSMask() inherits the ReferenceType() base class methods
+    Class FGSMask() inherits the ReferenceTypeMask() base class methods
     where static meta data for all reference file types are written.
     """
 
     def __init__(
         self,
         meta_data,
-        file_list=None, # TODO can this line be deleted since unused?
-        ref_type_data=None, # TODO can this line be deleted since unused?
-        superdark=None,
-        super_rate_image=None,
+        dark_filelist=None,
+        flat_filelist=None,
+        input_super_dark=None,
+        input_super_rate=None,
         outfile="roman_fgs_mask.asdf",
         clobber=False,
     ):
         """
-        The __init__ method initializes the class with proper input variables needed by the ReferenceType()
+        The __init__ method initializes the class with proper input variables needed by the ReferenceTypeMask()
         file base class.
 
         Parameters
         ----------
-        meta_data: Object; default = None
+        meta_data: WFIMetaMask object; default = None
             Object of meta information converted to dictionary when writing reference file.
-        TODO: delete from docstring? file_list: List of strings; default = None
-            List of file names with absolute paths. Intended for primary use during automated operations.
-        TODO: delete from docstring? ref_type_data: numpy array; default = None
-            Input which can be image array or data cube. Intended for development support file creation or as input
-            for reference file types not generated from a file list.
-        superdark: np.ndarray; default = None
+
+        dark_filelist: list, default = None
+            List of dark files used to create a superdark.
+        
+        flat_filelist: list, optional
+            List of flat files used to create a superslope. Required for monthly workflow
+        
+        input_super_dark: np.ndarray; default = None
             The superdark that will be used to calculate the CDS noise and dark rate images.
-        super_rate_image: np.ndarray; default = None
+
+        input_super_rate: np.ndarray; default = None
             This is dataproduct generated using flat-field exposures. It is a Super Flat that has been slope-fitted.
             The super_rate_image is used to identify low QE, dead, and bad flat-field pixels.
+
         outfile: string; default = roman_flat.asdf
             File path and name for saved reference file.
+
         clobber: Boolean; default = False
             True to overwrite outfile if outfile already exists. False will not overwrite and exception
             will be raised if duplicate file found.
@@ -79,18 +82,17 @@ class FGSMask(ReferenceType):
 
         # Access methods of base class ReferenceType
         super().__init__(
-            meta_data=meta_data,
+            meta_data,
+            dark_filelist=dark_filelist,
+            flat_filelist=flat_filelist,
+            input_super_rate=input_super_rate,
             outfile=outfile,
             clobber=clobber,
-            file_list=[""],
         )
 
         # The superdark and super rate images are created in the pipeline file
-        self.superdark = superdark
-        self.super_rate_image = super_rate_image
-
-        # Creating an empty mask to be filled in
-        self.mask_image = np.zeros((4096, 4096), dtype=np.uint32)
+        self.superdark = input_super_dark
+        self.super_rate_image = input_super_rate
 
         # Default meta creation for module specific ref type.
         if not isinstance(meta_data, WFIMetaFGSMask):
@@ -99,6 +101,23 @@ class FGSMask(ReferenceType):
             )
         if len(self.meta_data.description) == 0:
             self.meta_data.description = "Roman WFI FGS mask reference file."
+
+        if dark_filelist and self.superdark is None:
+            self.superdark = self.prep_superdark(self.prep_path)
+        
+        if flat_filelist and self.super_rate_image is None:
+            self.super_rate_image = self.prep_super_rate()
+
+        if self.superdark is None and self.super_rate_image is None:
+            raise ValueError(
+                "Mask requires user to supply either superdark, "
+                "super rate image, or dark/flat file_list."
+            )
+
+        # Initializing mask image array
+        self.mask_image = np.zeros((4096, 4096), dtype=np.uint32)
+
+        logging.info("Ready to generate reference file.")
 
 
     def make_fgs_mask_image(self, do_sigma_clip=True, sig_clip_cds_low=5.0, sig_clip_cds_high=5.0, dead_sigma_thr=5.0, hot_thr=2.5, superhot_thr=20.0, high_cds_thr=11.0, low_qe_thr=0.3, bad_flat_thr=0.0):
@@ -114,26 +133,34 @@ class FGSMask(ReferenceType):
         ----------
         do_sigma_clip : bool, optional
             If True, apply sigma clipping when computing CDS noise. Default is True.
+
         sig_clip_cds_low : float, optional
             Lower-sigma threshold for CDS noise sigma clipping. Default is 5.0.
+
         sig_clip_cds_high : float, optional
             Upper-sigma threshold for CDS noise sigma clipping. Default is 5.0.
+
         dead_sigma_thr : float, optional
             Number of standard deviations below the median slope used to identify
             dead pixels. Default is 5.0.
+
         hot_thr : float, optional
             Dark rate threshold in DN above which pixels are flagged as hot. Default is 2.5.
+
         superhot_thr : float, optional
             Dark rate threshold in DN above which pixels are flagged as superhot. Default is 20.0.
+
         high_cds_thr : float, optional
             CDS noise threshold in DN above which pixels are flagged as high CDS noise. Default is 11.0.
+
         low_qe_thr : float, optional
             Normalized super rate threshold below which pixels are flagged as low QE. Default is 0.3.
+
         bad_flat_thr : float, optional
             Normalized super rate threshold below which pixels are flagged as bad flat field. Default is 0.0.
         """
         logging.info("Creating the normalized super rate image")
-        self.create_normalized_super_rate_im()
+        self.normalized_super_rate = self.normalize_super_rate_image(self.super_rate_image)
         
         logging.info("Creating the CDS noise and dark rate images")
         self.create_cds_noise_darkrate_im(do_sigma_clip=do_sigma_clip,
@@ -160,17 +187,17 @@ class FGSMask(ReferenceType):
 
         logging.info("Finished running FGS mask workflow!")
 
-    def create_normalized_super_rate_im(self):
-        """
-        Normalize the super rate image by its nanmean.
+    # def create_normalized_super_rate_im(self):
+    #     """
+    #     Normalize the super rate image by its nanmean.
 
-        Computes the normalized super rate image by dividing the super rate
-        image by its nanmean and stores the result in self.normalized_super_rate.
-        """
-        normalized_super_rate = self.super_rate_image / np.nanmean(self.super_rate_image)
-        self.normalized_super_rate = normalized_super_rate
+    #     Computes the normalized super rate image by dividing the super rate
+    #     image by its nanmean and stores the result in self.normalized_super_rate.
+    #     """
+    #     normalized_super_rate = self.super_rate_image / np.nanmean(self.super_rate_image)
+    #     self.normalized_super_rate = normalized_super_rate
 
-        return
+    #     return
 
     def set_dead_pixels(self, dead_sigma_thr=5.0):
         """
