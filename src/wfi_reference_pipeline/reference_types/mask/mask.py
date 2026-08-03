@@ -60,32 +60,24 @@ class Mask(ReferenceTypeMask):
         ----------
         meta_data: WFIMetaMask object, default = None
             Object of meta information converted to dictionary when writing reference file.
-
         dark_filelist: list, default = None
                 List of dark files used to create a superdark.
-
         flat_filelist: list, optional
             List of flat files used to create a superslope. Required for monthly workflow
-
         input_super_dark: np.ndarray; default = None
             The superdark that will be used to calculate the dark rate images / ramps.
-
         input_super_rate: numpy.ndarray, optional
             Existing superslope image. Required for the weekly workflow.
-
         input_user_mask: 2D integer numpy array, default = None
             A 2D data quality integer mask array to be applied to reference file.
             If either a dark or flat filelist is supplied, then this input_user_mask
             array will be added to the bad pixels identified in the darks / flats workflow.
-
         outfile: string; default = roman_mask.asdf
             File path and name for saved reference file.
-
         clobber: Boolean; default = False
             True to overwrite outfile if outfile already exists. False will not overwrite and exception
             will be raised if duplicate file found.
         ---------
-
         See reference_type.py base class for additional attributes and methods.
         """
 
@@ -175,46 +167,37 @@ class Mask(ReferenceTypeMask):
         dead_sigma : float, optional
             Sigma threshold below the mean of the normalized flat-field image
             at which a pixel is classified as DEAD. Default is 5.
-
         max_low_qe_signal : float, optional
             Maximum normalized signal value for a pixel to be considered
             LOW_QE or OPEN. Default is 0.5.
-
         min_open_adj_signal : float, optional
             Minimum normalized signal value required for all adjacent pixels
             when identifying OPEN and ADJ_OPEN pixels. Default is 1.05.
-
         do_not_use_flags : list of str, optional
             List of DQ flag names whose pixels should also be marked as
             DO_NOT_USE. This prevents downstream romancal steps from using
             known bad pixels. Default is ["DEAD", "TELEGRAPH", "OTHER_BAD_PIXEL", "RESERVED_7" (RC/IRC)].
-
         sigma_thresh_jump : float, optional
             Threshold (in robust sigma units) used by the MAD-based jump
             detector to identify statistically significant read-to-read
             discontinuities in pixel ramps. Default is 5.0.
-
         min_jumps_for_rc_telegraph : int, optional
             Minimum number of detected jumps in a pixel ramp required for the
             pixel to be considered a candidate for RC or TELEGRAPH
             classification. Default is 1.
-
         noise_sigma : float or None, optional
             Effective per-read noise estimate used for chi-square and
             level-separation SNR calculations. If None, the noise is estimated
             empirically from the residuals of the best-fit RC model for each
             pixel.
-
         rc_thresh_ratio_tiebreaker : float, optional
             Lower threshold on the chi-square ratio (chi2_rc / chi2_tg) used to
             resolve ties in the voting classifier in favor of RC behavior.
             Default is 0.1.
-
         tg_thresh_ratio_tiebreaker : float, optional
             Upper threshold on the chi-square ratio (chi2_rc / chi2_tg) used to
             resolve ties in the voting classifier in favor of TELEGRAPH
             behavior. Default is 1.5.
-
         min_per_level : int, optional
             Minimum number of samples required in each level when estimating
             the low and high states of the two-level telegraph model. This

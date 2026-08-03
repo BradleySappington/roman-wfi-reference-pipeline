@@ -55,28 +55,21 @@ class FGSMask(ReferenceTypeMask):
         ----------
         meta_data: WFIMetaMask object; default = None
             Object of meta information converted to dictionary when writing reference file.
-
         dark_filelist: list, default = None
             List of dark files used to create a superdark.
-        
         flat_filelist: list, optional
             List of flat files used to create a superslope. Required for monthly workflow
-        
         input_super_dark: np.ndarray; default = None
             The superdark that will be used to calculate the CDS noise and dark rate images.
-
         input_super_rate: np.ndarray; default = None
             This is dataproduct generated using flat-field exposures. It is a Super Flat that has been slope-fitted.
             The super_rate_image is used to identify low QE, dead, and bad flat-field pixels.
-
         outfile: string; default = roman_flat.asdf
             File path and name for saved reference file.
-
         clobber: Boolean; default = False
             True to overwrite outfile if outfile already exists. False will not overwrite and exception
             will be raised if duplicate file found.
         ---------
-
         See reference_type.py base class for additional attributes and methods.
         """
 
@@ -133,29 +126,21 @@ class FGSMask(ReferenceTypeMask):
         ----------
         do_sigma_clip : bool, optional
             If True, apply sigma clipping when computing CDS noise. Default is True.
-
         sig_clip_cds_low : float, optional
             Lower-sigma threshold for CDS noise sigma clipping. Default is 5.0.
-
         sig_clip_cds_high : float, optional
             Upper-sigma threshold for CDS noise sigma clipping. Default is 5.0.
-
         dead_sigma_thr : float, optional
             Number of standard deviations below the median slope used to identify
             dead pixels. Default is 5.0.
-
         hot_thr : float, optional
             Dark rate threshold in DN above which pixels are flagged as hot. Default is 2.5.
-
         superhot_thr : float, optional
             Dark rate threshold in DN above which pixels are flagged as superhot. Default is 20.0.
-
         high_cds_thr : float, optional
             CDS noise threshold in DN above which pixels are flagged as high CDS noise. Default is 11.0.
-
         low_qe_thr : float, optional
             Normalized super rate threshold below which pixels are flagged as low QE. Default is 0.3.
-
         bad_flat_thr : float, optional
             Normalized super rate threshold below which pixels are flagged as bad flat field. Default is 0.0.
         """
@@ -187,17 +172,6 @@ class FGSMask(ReferenceTypeMask):
 
         logging.info("Finished running FGS mask workflow!")
 
-    # def create_normalized_super_rate_im(self):
-    #     """
-    #     Normalize the super rate image by its nanmean.
-
-    #     Computes the normalized super rate image by dividing the super rate
-    #     image by its nanmean and stores the result in self.normalized_super_rate.
-    #     """
-    #     normalized_super_rate = self.super_rate_image / np.nanmean(self.super_rate_image)
-    #     self.normalized_super_rate = normalized_super_rate
-
-    #     return
 
     def set_dead_pixels(self, dead_sigma_thr=5.0):
         """
@@ -287,8 +261,8 @@ class FGSMask(ReferenceTypeMask):
         self.mask_image[flat_mask] += FGSFlags.FLAT_FIELD
 
         return
-    
-    # TODO: should this just be in make_fgs_mask_image?
+
+
     def create_cds_noise_darkrate_im(self, do_sigma_clip=True, sig_clip_cds_low=5.0, sig_clip_cds_high=5.0):
         """
         Create the CDS noise and dark rate images from the superdark.
@@ -314,15 +288,13 @@ class FGSMask(ReferenceTypeMask):
         self.readnoise_cube.make_ramp_model(order=1)
 
         # Compute and write CDS noise image
-        # TODO the comp_cds_noise function is for the ReadNoise class,
-        # so I would need to create that obj to use the function. IMO it's
-        # more lines to do that than to just redefine the function
         self.compute_cds_noise_from_datacube(do_sigma_clip=do_sigma_clip,
                                              sig_clip_cds_low=sig_clip_cds_low, 
                                              sig_clip_cds_high=sig_clip_cds_high)
         
         logging.info("Creating darkrate image")
         self.darkrate_image = self.readnoise_cube.rate_image
+
 
     def compute_cds_noise_from_datacube(self, do_sigma_clip=True, sig_clip_cds_low=5.0, sig_clip_cds_high=5.0):
         """
@@ -373,12 +345,13 @@ class FGSMask(ReferenceTypeMask):
 
         self.cds_noise = cds_noise
 
+
     def calculate_error(self):
         """
         Abstract method not applicable to FGSMask.
         """
-
         pass
+
 
     def update_data_quality_array(self):
         """
@@ -388,8 +361,8 @@ class FGSMask(ReferenceTypeMask):
         The attribute mask is reserved specifically setting the data quality arrays
         of other reference file types.
         """
-
         pass
+
 
     def populate_datamodel_tree(self):
         """
