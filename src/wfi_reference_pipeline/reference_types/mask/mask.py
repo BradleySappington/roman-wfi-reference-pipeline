@@ -1,9 +1,9 @@
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
-from astropy.convolution import Box2DKernel, convolve
 from roman_datamodels.datamodels import MaskRefModel
 from roman_datamodels.dqflags import pixel as dqflags
 from scipy.optimize import curve_fit
@@ -13,11 +13,11 @@ from wfi_reference_pipeline.constants import (
     DETECTOR_PIXEL_X_COUNT,
     DETECTOR_PIXEL_Y_COUNT,
 )
-from wfi_reference_pipeline.reference_types.reference_type import ReferenceType
+from wfi_reference_pipeline.reference_types.reference_type import ReferenceTypeMask
 from wfi_reference_pipeline.resources.wfi_meta_mask import WFIMetaMask
 
 
-class Mask(ReferenceType):
+class Mask(ReferenceTypeMask):
     """
     Mask() generates a Roman WFI bad pixel mask reference file.
 
@@ -44,62 +44,59 @@ class Mask(ReferenceType):
     def __init__(
         self,
         meta_data,
-        file_list=None,
-        ref_type_data=None,
-        superdark=None,
-        super_rate_image=None,
-        bit_mask=None,
+        dark_filelist=None,
+        flat_filelist=None,
+        input_super_dark=None,
+        input_super_rate=None,
+        input_user_mask=None,
         outfile="roman_mask.asdf",
         clobber=False,
-    ):
+    ):    
         """
-        The __init__ method initializes the class with proper input variables needed by the ReferenceType()
+        The __init__ method initializes the class with proper input variables needed by the ReferenceTypeMask()
         file base class.
 
         Parameters
         ----------
-        meta_data: Object; default = None
+        meta_data: WFIMetaMask object, default = None
             Object of meta information converted to dictionary when writing reference file.
-
-        file_list: List of strings; default = None
-            List of file paths. Used in Mask pipeline, not Mask module. 
-
-        ref_type_data: numpy array; default = None
-            Input data cube. Intended as input for Mask not generated from a file list.
-
-        superdark: np.ndarray; default = None
+        dark_filelist: list, default = None
+                List of dark files used to create a superdark.
+        flat_filelist: list, optional
+            List of flat files used to create a superslope. Required for monthly workflow
+        input_super_dark: np.ndarray; default = None
             The superdark that will be used to calculate the dark rate images / ramps.
-
-        super_rate_image: np.ndarray; default = None
-            This is a data product generated using flat-field exposures. It is a Super Flat that has been slope-fitted.
-
-        bit_mask: 2D integer numpy array, default = None
+        input_super_rate: numpy.ndarray, optional
+            Existing superslope image. Required for the weekly workflow.
+        input_user_mask: 2D integer numpy array, default = None
             A 2D data quality integer mask array to be applied to reference file.
-
+            If either a dark or flat filelist is supplied, then this input_user_mask
+            array will be added to the bad pixels identified in the darks / flats workflow.
         outfile: string; default = roman_mask.asdf
             File path and name for saved reference file.
-
         clobber: Boolean; default = False
             True to overwrite outfile if outfile already exists. False will not overwrite and exception
             will be raised if duplicate file found.
         ---------
-
         See reference_type.py base class for additional attributes and methods.
         """
 
         # Access methods of base class ReferenceType.
         super().__init__(
-            meta_data=meta_data,
+            meta_data,
+            dark_filelist=dark_filelist,
+            flat_filelist=flat_filelist,
+            input_super_rate=input_super_rate,
             outfile=outfile,
             clobber=clobber,
-            file_list=file_list,
-            ref_type_data=ref_type_data
         )
 
         # Initialize attributes
         self.mask_image = None
-        self.super_rate_image = super_rate_image
-        self.superdark = superdark
+        self.super_rate_image = input_super_rate
+        self.superdark = input_super_dark
+
+        self.prep_path = os.path.dirname(self.outfile)
 
         # Default meta creation for module specific ref type.
         if not isinstance(meta_data, WFIMetaMask):
@@ -112,33 +109,40 @@ class Mask(ReferenceType):
 
         logging.info(f"Default mask reference file object: {outfile}.")
 
-        # Checking for valid input types
-        if ref_type_data is not None:
-            if not isinstance(ref_type_data, np.ndarray):
-                raise ValueError("Mask ref_type_data must be a numpy array.")
+        # Checking for valid inputs
+        if dark_filelist and self.superdark is None:
+            self.superdark = self.prep_superdark(self.prep_path)
 
-            if ref_type_data.dtype != np.uint32:
-                raise ValueError("Mask ref_type_data must be of type np.uint32. Current type is:", type(ref_type_data))
+        if flat_filelist and self.super_rate_image is None:
+            self.super_rate_image = self.prep_super_rate()
 
-            if not ref_type_data.shape == (DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT):
-                raise ValueError(f"Mask ref_type_data must have shape ({DETECTOR_PIXEL_X_COUNT}, {DETECTOR_PIXEL_Y_COUNT}). Current shape is: {ref_type_data.shape}")
+        if input_user_mask is not None:
+            if not isinstance(input_user_mask, np.ndarray):
+                raise ValueError("Mask input_user_mask must be a numpy array.")
 
-        if ref_type_data is None and self.super_rate_image is None and self.superdark is None:
-            raise ValueError("Mask requires user to supply either ref_type_data, superdark, or super rate image.")
+            if input_user_mask.dtype != np.uint32:
+                raise ValueError("Mask input_user_mask must be of type np.uint32. Current type is:", type(input_user_mask))
+            
+            if not input_user_mask.shape == (DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT):
+                raise ValueError(f"Mask input_user_mask must have shape ({DETECTOR_PIXEL_X_COUNT}, {DETECTOR_PIXEL_Y_COUNT}). Current shape is: {input_user_mask.shape}")
 
-        else:
             logging.info("The input 2D data array is now self.mask_image.")
-            self.mask_image = ref_type_data
-            logging.info("Ready to generate reference file.")
+            self.mask_image = input_user_mask
+
+        if self.superdark is None and self.super_rate_image is None and self.mask_image is None:
+            raise ValueError(
+                "Mask requires user to supply either input_user_mask, superdark, "
+                "super rate image, or dark/flat file_list."
+            )
+
+        logging.info("Ready to generate reference file.")
 
 
     def make_mask_image(self,
-                        boxwidth=4,
                         dead_sigma=5.,
                         max_low_qe_signal=0.5,
                         min_open_adj_signal=1.05,
-                        do_not_use_flags=["DEAD", "RESERVED_6", "RESERVED_7", "TELEGRAPH", "OTHER_BAD_PIXEL", "RESERVED_7"],
-                        from_smoothed=False,
+                        do_not_use_flags=["DEAD", "RESERVED_6", "RESERVED_7", "TELEGRAPH", "OTHER_BAD_PIXEL"],
                         sigma_thresh_jump=5.0,
                         min_jumps_for_rc_telegraph=1,
                         noise_sigma=None,
@@ -160,59 +164,40 @@ class Mask(ReferenceType):
 
         Parameters:
         -----------
-        boxwidth : int, optional
-            Width of the boxcar smoothing kernel used when generating the
-            locally-normalized flat-field image. Only used when
-            from_smoothed=True. Default is 4.
-
         dead_sigma : float, optional
             Sigma threshold below the mean of the normalized flat-field image
             at which a pixel is classified as DEAD. Default is 5.
-
         max_low_qe_signal : float, optional
             Maximum normalized signal value for a pixel to be considered
             LOW_QE or OPEN. Default is 0.5.
-
         min_open_adj_signal : float, optional
             Minimum normalized signal value required for all adjacent pixels
             when identifying OPEN and ADJ_OPEN pixels. Default is 1.05.
-
         do_not_use_flags : list of str, optional
             List of DQ flag names whose pixels should also be marked as
             DO_NOT_USE. This prevents downstream romancal steps from using
             known bad pixels. Default is ["DEAD", "TELEGRAPH", "OTHER_BAD_PIXEL", "RESERVED_7" (RC/IRC)].
-
-        from_smoothed : bool, optional
-            If True, generate normalized flat-field images using local
-            (smoothed) normalization. If False, use global mean normalization.
-            Default is False.
-
         sigma_thresh_jump : float, optional
             Threshold (in robust sigma units) used by the MAD-based jump
             detector to identify statistically significant read-to-read
             discontinuities in pixel ramps. Default is 5.0.
-
         min_jumps_for_rc_telegraph : int, optional
             Minimum number of detected jumps in a pixel ramp required for the
             pixel to be considered a candidate for RC or TELEGRAPH
             classification. Default is 1.
-
         noise_sigma : float or None, optional
             Effective per-read noise estimate used for chi-square and
             level-separation SNR calculations. If None, the noise is estimated
             empirically from the residuals of the best-fit RC model for each
             pixel.
-
         rc_thresh_ratio_tiebreaker : float, optional
             Lower threshold on the chi-square ratio (chi2_rc / chi2_tg) used to
             resolve ties in the voting classifier in favor of RC behavior.
             Default is 0.1.
-
         tg_thresh_ratio_tiebreaker : float, optional
             Upper threshold on the chi-square ratio (chi2_rc / chi2_tg) used to
             resolve ties in the voting classifier in favor of TELEGRAPH
             behavior. Default is 1.5.
-
         min_per_level : int, optional
             Minimum number of samples required in each level when estimating
             the low and high states of the two-level telegraph model. This
@@ -221,9 +206,7 @@ class Mask(ReferenceType):
         """
         if self.super_rate_image is not None:
             logging.info("Running update_mask_from_flats()")
-            self.update_mask_from_flats(from_smoothed=from_smoothed,
-                                        boxwidth=boxwidth,
-                                        dead_sigma=dead_sigma,
+            self.update_mask_from_flats(dead_sigma=dead_sigma,
                                         max_low_qe_signal=max_low_qe_signal,
                                         min_open_adj_signal=min_open_adj_signal)
         if self.superdark is not None:
@@ -242,13 +225,8 @@ class Mask(ReferenceType):
         logging.info("Setting DO_NOT_USE pixels")
         self.set_do_not_use_pixels(do_not_use_flags=do_not_use_flags)
 
-        # Updating the Mask object with calculated mask
-        self.mask_image = self.dq_mask
-
 
     def update_mask_from_flats(self,
-                               from_smoothed,
-                               boxwidth,
                                dead_sigma,
                                max_low_qe_signal,
                                min_open_adj_signal):
@@ -264,8 +242,7 @@ class Mask(ReferenceType):
         identifying low sensitivity pixels (such as DEAD).
         """
         logging.info("Creating normalized image with super_rate_image")
-        self.normalized_super_rate = self.create_normalized_image(from_smoothed,
-                                                                  boxwidth)
+        self.normalized_super_rate = self.normalize_super_rate_image(self.super_rate_image)
 
         logging.info("Identifying DEAD pixels")
         self.set_dead_pixels(dead_sigma)
@@ -275,40 +252,6 @@ class Mask(ReferenceType):
                                         min_open_adj_signal)
 
         logging.info("All DEAD, OPEN/ADJ, LOW_QE pixels identified!")
-
-
-    def create_normalized_image(self, from_smoothed, boxwidth):
-        """
-        Use the super_rate_image to create a normalized super rate image.
-        If `from_smoothed` is True, then the super_rate_image will be 
-        smoothed with a 2D box kernel before being normalized.
-
-        Parameters
-        ----------
-        from_smoothed : bool
-            If True, then smooth the super_rate_image before normalizing.
-        boxwidth : int
-            Used as the 2D box kernel width if `from_smoothed` is True.
-
-        Returns
-        -------
-        Returns the normalized super_rate_image.
-        """
-        if from_smoothed:
-
-            smoothing_kernel = Box2DKernel(boxwidth)
-            smoothed_image = convolve(self.super_rate_image,
-                                      smoothing_kernel,
-                                      boundary="fill",
-                                      fill_value=np.nanmedian(self.super_rate_image),
-                                      nan_treatment="interpolate")
-
-            denominator = smoothed_image
-
-        else:
-            denominator = np.nanmean(self.super_rate_image)
-
-        return self.super_rate_image / denominator
 
 
     def set_dead_pixels(self, dead_sigma):
@@ -327,7 +270,7 @@ class Mask(ReferenceType):
         dead_mask = (self.normalized_super_rate < threshold).astype(np.uint32)
         dead_mask[dead_mask == 1] = dqflags.DEAD.value
 
-        self.dq_mask += dead_mask
+        self.mask_image += dead_mask
 
 
     def _get_adjacent_pix(self, x_coor, y_coor, im):
@@ -413,7 +356,7 @@ class Mask(ReferenceType):
         for x, y in zip(low_sig_x, low_sig_y):
 
             # Skip calculations if this is a DEAD pixel
-            if self.dq_mask[y, x] & dqflags.DEAD.value == dqflags.DEAD.value:
+            if self.mask_image[y, x] & dqflags.DEAD.value == dqflags.DEAD.value:
                 continue
 
             adj_coor = self._get_adjacent_pix(
@@ -434,9 +377,9 @@ class Mask(ReferenceType):
             else:
                 low_qe_map[y, x] = dqflags.LOW_QE.value
 
-        self.dq_mask += low_qe_map.astype(np.uint32)
-        self.dq_mask += open_map.astype(np.uint32)
-        self.dq_mask += adj_map.astype(np.uint32)
+        self.mask_image += low_qe_map.astype(np.uint32)
+        self.mask_image += open_map.astype(np.uint32)
+        self.mask_image += adj_map.astype(np.uint32)
 
 
     def set_do_not_use_pixels(self, do_not_use_flags):
@@ -458,13 +401,13 @@ class Mask(ReferenceType):
             bitval = dqflags[flag].value
 
             # The indices of pixels with the current iteration's flag
-            flagged_pix = np.where((self.dq_mask & bitval) == bitval)
+            flagged_pix = np.where((self.mask_image & bitval) == bitval)
 
             # Setting flagged pix to DNU bitval
             dnupix_mask[flagged_pix] = dqflags.DO_NOT_USE.value
 
         # Adding to mask
-        self.dq_mask += dnupix_mask.astype(np.uint32)
+        self.mask_image += dnupix_mask.astype(np.uint32)
 
         return
 
@@ -633,9 +576,9 @@ class Mask(ReferenceType):
                 other_bad_mask[y, x] = dqflags.OTHER_BAD_PIXEL.value
 
         # Updating the full mask
-        self.dq_mask += rc_mask
-        self.dq_mask += telegraph_mask
-        self.dq_mask += other_bad_mask
+        self.mask_image += rc_mask
+        self.mask_image += telegraph_mask
+        self.mask_image += other_bad_mask
 
         self.metrics_df = pd.DataFrame(rows)
 
@@ -1119,7 +1062,7 @@ class Mask(ReferenceType):
         refpix_mask[:, :4] = dqflags.REFERENCE_PIXEL.value
         refpix_mask[:, -4:] = dqflags.REFERENCE_PIXEL.value
 
-        self.dq_mask += refpix_mask
+        self.mask_image += refpix_mask
 
 
     def calculate_error(self):
