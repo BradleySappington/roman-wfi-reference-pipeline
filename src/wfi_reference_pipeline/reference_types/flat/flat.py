@@ -1,11 +1,12 @@
+import glob
 import logging
 import os
+from concurrent.futures import ProcessPoolExecutor
+
 import asdf
 import numpy as np
 from astropy import units as u
-from concurrent.futures import ProcessPoolExecutor
 from roman_datamodels.datamodels import FlatRefModel
-import glob
 
 from wfi_reference_pipeline.constants import (
     SCI_PIXEL_X_COUNT,
@@ -49,6 +50,7 @@ class Flat(ReferenceType):
             bit_mask=None,
             outfile="roman_flat.asdf",
             clobber=False,
+            file_map=None
     ):
         """
         The __init__ method initializes the class with proper input variables needed by the ReferenceType()
@@ -70,6 +72,8 @@ class Flat(ReferenceType):
         clobber: Boolean; default = False
             True to overwrite outfile if outfile already exists. False will not overwrite and exception
             will be raised if duplicate file found.
+        file_map: dict
+            A dictionary structured as: {(target_sca_int, primary_file_path): exact_matching_file_path}
         ---------
 
         See reference_type.py base class for additional attributes and methods.
@@ -104,7 +108,7 @@ class Flat(ReferenceType):
         self.flat_image = None  # The attribute 'data' in data model.
         self.flat_error = None  # The attribute assigned to the flat['err'].
         self.num_files = 0
-
+        self.file_map = file_map
         # Module flow creating reference file
         if self.file_list:
             # Get file list properties and select data cube.
@@ -201,8 +205,8 @@ class Flat(ReferenceType):
         logging.debug(f"Fitting data cube with fit order={fit_order}.")
         self.data_cube.fit_cube(degree=fit_order)
 
-    def make_flat_from_files(self, lo=100, hi=500, calc_error=False, nsamples=None,
-                             flat_lo=0.2, flat_hi=2.):
+    def make_flat_from_files(self, lo=10, hi=2000, calc_error=False, nsamples=None,
+                             flat_lo=0.2, flat_hi=2., norm_to_dark=True):
         """
         Go through the files supplied to the module and generate a
         cube of rate images into an array. This method uses FlatDataCube
@@ -212,10 +216,10 @@ class Flat(ReferenceType):
         -------
         avg_rate_image: 2D array;
             The average of the rate_image_array in the z axis.
-        lo: float;
+        lo: float; default 10,
             Minimum median (in a given sensor/exposure) count rate (in units of DN/s)
             for an image to be considered during the flat generation process.
-        hi: float;
+        hi: float; default 2000,
             Maximum median (in a given sensor/exposure) count rate (in units of DN/s)
             for an image to be considered during the flat generation process.
         calc_error: bool,
@@ -228,14 +232,21 @@ class Flat(ReferenceType):
             If a flat value for a pixel is below `flat_lo` it is flagged and replaced by 1.
         flat_hi: float; default 2.0,
             If a flat value for a pixel is above `flat_hi` it is flagged and replaced by 1.
+        norm_to_dark: bool; default True,
+            If `True` normalize the flat to the dark element, i.e., use all image in an exposure
+            and compute the median to obtain the normalization factor. If `False`, each detector
+            is individually normalized.
         """
 
         logging.debug(
             "Making flat from the average flat rate of file list data cubes.")
-
+        
+        rate_image_array = None
+ 
         if nsamples is None:
             # Trying to avoid oversampling
             nsamples = max(1, int(self.num_files / 2))
+        
         for fl in range(0, self.num_files):
             fname = self.file_list[fl]
             tmp = asdf.open(fname, lazy_tree=True)
@@ -245,13 +256,14 @@ class Flat(ReferenceType):
                 raise ValueError("The input data is expected to be a ramp (2D).\
                                   Please calculate or process your data first.")
             else:
-                npixx, npixy = np.shape(tmp.tree["roman"]["data"])
                 tmp_cube = tmp.tree["roman"]["data"].copy()
-                if fl == 0:
-                    rate_image_array = np.zeros((self.num_files,
+                if rate_image_array is None:
+                    npixx, npixy = tmp_cube.shape
+                    rate_image_array = np.full((self.num_files,
                                                  npixx,
                                                  npixy),
-                                                dtype=np.float32)
+                                                 np.nan,
+                                                 dtype=np.float32)
             tmp.close()
             if not isinstance(tmp_cube, (np.ndarray, u.Quantity)):
                 raise TypeError(
@@ -266,19 +278,22 @@ class Flat(ReferenceType):
             # Sub-out infs by nans to ignore them safely
             tmp_cube[np.isinf(tmp_cube)] = np.nan
             # Check if the majority of pixels are not valid and skip if so
-            _ngood = np.count_nonzero(np.isfinite(tmp_cube))
-            if _ngood/tmp_cube.size < 0.2:
-                rate_image_array[fl, :, :] = np.nan*np.ones_like(tmp_cube)
-                print('only', _ngood/tmp_cube.size, 'good pixels. Skipping...')
+            num_nans = np.isnan(tmp_cube).sum()
+            total_pixels = tmp_cube.size
+            good_ratio = (total_pixels - num_nans) / total_pixels
+            if good_ratio < 0.2:
+                # If less than 20% of the pixels in an image are usable, skip that image
+                logging.debug(f"Less than 20 percent of pixels usable. Skipped image {fname}")
             else:
-                median = compute_fp_median(self.file_list[fl], npixx, npixy, t_start, sca, tmp_cube)
-                print(median, np.nanmedian(tmp_cube), lo, hi)
-                # We will only consider images with median rates between "lo" and "hi"
-                if (median >= lo) & (median <= hi):
-                    rate_image_array[fl, :, :] = tmp_cube/median  # Normalized L2
+                if norm_to_dark:
+                    median = compute_fp_median(self.file_list[fl], npixx, npixy, t_start,
+                                               sca, tmp_cube, self.file_map)
                 else:
-                    # This is a bit wasteful memory wise...
-                    rate_image_array[fl, :, :] = np.nan*np.ones_like(tmp_cube)
+                    median = np.nanmedian(tmp_cube)
+                # We will only consider images with median rates between "lo" and "hi"
+                if lo <= median <= hi:
+                    rate_image_array[fl, :, :] = tmp_cube/median  # Normalized L2
+        
         # Compute "master" flat as median of individual flats pixel-by-pixel
         flat_image = np.nanmedian(rate_image_array, axis=0)
         self.flat_image = flat_image  # populate the attribute
@@ -299,7 +314,8 @@ class Flat(ReferenceType):
         """
         Calculate the uncertainty in the flat rate image using bootstrap resampling.
         If error array is None,
-        generate random flat error array.
+        generate random flat error array. If either nsamples or nboot are zero, just
+        compute uncertainty as standard deviation of the resulting flats in a pixel.
 
         Parameters
         ----------
@@ -318,13 +334,17 @@ class Flat(ReferenceType):
             self.flat_error = np.random.randint(
                 1, 11, size=(SCI_PIXEL_X_COUNT, SCI_PIXEL_Y_COUNT)).astype(np.float32) / 100.
         else:
-            # We randomly select a subset of the images to calculate the median on them
-            sel = np.random.choice(
-                np.arange(ind_flat_array.shape[0]), size=(nsamples, nboot))
-            median_samples = np.nanmedian(ind_flat_array[sel], axis=0)
-            # Compute the standard deviation of the median estimates as the uncertainty
-            flat_unc = np.nanstd(median_samples, axis=0)
-            self.flat_error = flat_unc
+            if (nsamples > 0) & (nboot > 0):
+                # We randomly select a subset of the images to calculate the median on them
+                sel = np.random.choice(
+                    np.arange(ind_flat_array.shape[0]), size=(nsamples, nboot))
+                median_samples = np.nanmedian(ind_flat_array[sel], axis=0)
+                # Compute the standard deviation of the median estimates as the uncertainty
+                flat_unc = np.nanstd(median_samples, axis=0)
+                self.flat_error = flat_unc
+            else:
+                # If either nsamples <= 0 or nboot <= 0
+                self.flat_error = np.nanstd(ind_flat_array, axis=0)
 
     def update_data_quality_array(self, low_qe_threshold=0.2,
                                   flat_hi_threshold=2.,
@@ -506,44 +526,60 @@ class Flat(ReferenceType):
                 # TODO - DISCUSS HOW TO HANDLE ERRORS LIKE THIS, ASSUME WE CAN'T JUST LOG IT - For cube class discussion - should probably raise the error
 
 
-def _process_single_sca(ifp, sca, fname, tmp_cube, t_start):
-    """Worker function to process a single SCA index."""
+def _process_single_sca(ifp, sca, fname, tmp_cube, t_start, resolved_file_map=None):
+    """
+    Worker function to process a single SCA index.
+    
+    Parameters
+    ----------
+    resolved_file_map : dict, optional
+        Pre-calculated dictionary mapping (ifp, original_timestamp) -> exact_file_path.
+        Crucial for avoiding slow dynamic globbing inside parallel processes.
+    """
     if ifp == sca:
         return ifp - 1, tmp_cube
-        
+
+    # 1. Resolve filename using a pre-mapped dictionary if available
     fname_aux = fname.replace(f'WFI{sca:02d}', f'WFI{ifp:02d}')
     
-    # Resolve timestamp mismatch if file does not exist
     if not os.path.exists(fname_aux):
-        timestamp = fname_aux.split('/')[-1].split('_')[3]
-        _files_here = glob.glob(fname_aux.replace(timestamp, '*'))
-        for _f_h in _files_here:
-            # Open with minimal overhead to check headers
-            with asdf.open(_f_h, lazy_tree=True, lazy_load=True) as _ff:
-                t_here = _ff["roman"]["meta"]["exposure"]["start_time"]
-                # Assuming t_start and t_here are astropy Time objects
-                # If they are strings, you will need to parse them first
-                dt = t_here - t_start 
-            if np.abs(dt.sec) < 10:
-                fname_aux = _f_h
-                break
-                
-    print(f"Processing SCA {ifp:02d}: {fname_aux}")
-    
-    # Read and clean the data
+        if resolved_file_map and (ifp, fname) in resolved_file_map:
+            fname_aux = resolved_file_map[(ifp, fname)]
+        else:
+            # Fallback path if mapping wasn't provided (slower)
+            timestamp = fname_aux.split('/')[-1].split('_')[3]
+            _files_here = glob.glob(fname_aux.replace(timestamp, '*'))
+            for _f_h in _files_here:
+                with asdf.open(_f_h, lazy_tree=True, lazy_load=True) as _ff:
+                    t_here = _ff["roman"]["meta"]["exposure"]["start_time"]
+                    # Calculate difference in total seconds quickly
+                    if abs((t_here - t_start).sec) < 10:
+                        fname_aux = _f_h
+                        break
+
+    # 2. Optimized Reading using Memory Mapping
     if os.path.exists(fname_aux):
-        with asdf.open(fname_aux, lazy_tree=True) as tmp:
-            _data = tmp["roman"]["data"]
-            if isinstance(_data, u.Quantity):
-                _data = _data.value
-            _data = np.array(_data, dtype=np.float32) # Ensure correct dtype
+        # Enable memory mapping explicitly to map array data directly into virtual memory
+        with asdf.open(fname_aux, lazy_tree=True, memmap=True) as tmp:
+            _data_ref = tmp["roman"]["data"]
+            
+            if isinstance(_data_ref, u.Quantity):
+                # Inline extraction & explicit assignment conversion
+                _data = np.asarray(_data_ref.value, dtype=np.float32)
+            else:
+                _data = np.asarray(_data_ref, dtype=np.float32)
+                
+            # Perform an in-place cleaning operation to save CPU cycles
             _data[np.isinf(_data)] = np.nan
             return ifp - 1, _data
+            
     else:
-        # Fallback if no matching file could be found
-        return ifp - 1, np.full((tmp_cube.shape[0], tmp_cube.shape[1]), np.nan, dtype=np.float32)
+        # Avoid creating random structures; allocate cleanly filled array
+        return ifp - 1, np.full(tmp_cube.shape, np.nan, dtype=np.float32)
+                
 
-def compute_fp_median(fname, npixx, npixy, t_start, sca, tmp_cube):
+
+def compute_fp_median(fname, npixx, npixy, t_start, sca, tmp_cube, resolved_file_map):
     # Note: Added tmp_cube to the arguments as it was missing in the original signature
     tmp_fp = np.zeros((18, npixx, npixy), dtype=np.float32)
     
@@ -552,7 +588,7 @@ def compute_fp_median(fname, npixx, npixy, t_start, sca, tmp_cube):
     with ProcessPoolExecutor() as executor:
         # Submit jobs for all 18 SCAs
         futures = [
-            executor.submit(_process_single_sca, ifp, sca, fname, tmp_cube, t_start)
+            executor.submit(_process_single_sca, ifp, sca, fname, tmp_cube, t_start, resolved_file_map)
             for ifp in range(1, 19)
         ]
         
