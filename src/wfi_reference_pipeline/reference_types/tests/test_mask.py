@@ -21,7 +21,9 @@ def valid_meta_data():
 @pytest.fixture
 def valid_input_user_mask_array():
     """Fixture for generating a valid input_user_mask array (mask image)."""
-    return np.zeros((DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT), dtype=np.uint32)  # Simulate a valid mask image
+    arr = np.zeros((DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT), dtype=np.uint32)  # Simulate a valid mask image
+    arr[1000:1100, 1000:1100] |= dqflags.OTHER_BAD_PIXEL.value
+    return arr
 
 @pytest.fixture
 def mask_object_with_data_array(valid_meta_data, valid_input_user_mask_array):
@@ -66,6 +68,7 @@ class TestMask:
         assert isinstance(mask_object_with_data_array, Mask)
         assert mask_object_with_data_array.mask_image.shape == (DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT)
         assert mask_object_with_data_array.mask_image.dtype == np.uint32
+        assert np.count_nonzero((mask_object_with_data_array.mask_image & dqflags.OTHER_BAD_PIXEL.value) != 0)
 
     def test_mask_instantiation_with_invalid_metadata(self, valid_input_user_mask_array):
         """
@@ -79,14 +82,14 @@ class TestMask:
         """
         Test that Mask raises ValueError with invalid reference type data.
         """
-        with pytest.raises(ValueError):
+        with pytest.raises(TypeError):
             Mask(meta_data=valid_meta_data, input_user_mask="invalid_input_mask")
 
     def test_mask_instantiation_with_wrong_input_user_mask(self, valid_meta_data):
         """
         Test that Mask raises ValueError with array of wrong dimensions.
         """
-        with pytest.raises(ValueError):
+        with pytest.raises(TypeError):
             Mask(meta_data=valid_meta_data, input_user_mask=np.ones((10, 10)).astype(np.float32))
 
     def test_make_mask_image_with_data_array(self, mask_object_with_data_array):
@@ -141,9 +144,8 @@ class TestMask:
             dark_filelist=fake_dark_filelist,
             input_super_dark=fake_superdark_array,
         )
-        assert mask_obj.superdark is fake_superdark_array
-        assert mask_obj.super_rate_image is None
-        assert mask_obj.mask_image is None
+        assert mask_obj.super_dark is fake_superdark_array
+        assert mask_obj.super_rate is None
 
     def test_one_flat_filelist(self, valid_meta_data, fake_flat_filelist, fake_super_rate_array):
         """
@@ -155,9 +157,8 @@ class TestMask:
             flat_filelist=fake_flat_filelist,
             input_super_rate=fake_super_rate_array,
         )
-        assert mask_obj.super_rate_image is fake_super_rate_array
-        assert mask_obj.superdark is None
-        assert mask_obj.mask_image is None
+        assert mask_obj.super_rate is fake_super_rate_array
+        assert mask_obj.super_dark is None
 
     def test_input_user_mask_array_only(self, mask_object_with_data_array):
         """
@@ -165,8 +166,8 @@ class TestMask:
         mask_image and leaves superdark / super_rate_image unset.
         """
         assert mask_object_with_data_array.mask_image is not None
-        assert mask_object_with_data_array.superdark is None
-        assert mask_object_with_data_array.super_rate_image is None
+        assert mask_object_with_data_array.super_dark is None
+        assert mask_object_with_data_array.super_rate is None
 
     def test_two_filelists(self, valid_meta_data, fake_dark_filelist, fake_flat_filelist,
                             fake_superdark_array, fake_super_rate_array):
@@ -181,9 +182,8 @@ class TestMask:
             input_super_dark=fake_superdark_array,
             input_super_rate=fake_super_rate_array,
         )
-        assert mask_obj.superdark is fake_superdark_array
-        assert mask_obj.super_rate_image is fake_super_rate_array
-        assert mask_obj.mask_image is None
+        assert mask_obj.super_dark is fake_superdark_array
+        assert mask_obj.super_rate is fake_super_rate_array
 
     def test_two_filelists_and_input_user_mask_propagates(
         self, valid_meta_data, fake_dark_filelist, fake_flat_filelist,

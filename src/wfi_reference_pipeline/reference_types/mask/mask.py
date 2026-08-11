@@ -1,5 +1,4 @@
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -86,17 +85,12 @@ class Mask(ReferenceTypeMask):
             meta_data,
             dark_filelist=dark_filelist,
             flat_filelist=flat_filelist,
+            input_super_dark=input_super_dark,
             input_super_rate=input_super_rate,
+            input_user_mask=input_user_mask,
             outfile=outfile,
             clobber=clobber,
         )
-
-        # Initialize attributes
-        self.mask_image = None
-        self.super_rate_image = input_super_rate
-        self.superdark = input_super_dark
-
-        self.prep_path = os.path.dirname(self.outfile)
 
         # Default meta creation for module specific ref type.
         if not isinstance(meta_data, WFIMetaMask):
@@ -109,31 +103,7 @@ class Mask(ReferenceTypeMask):
 
         logging.info(f"Default mask reference file object: {outfile}.")
 
-        # Checking for valid inputs
-        if dark_filelist and self.superdark is None:
-            self.superdark = self.prep_superdark(self.prep_path)
-
-        if flat_filelist and self.super_rate_image is None:
-            self.super_rate_image = self.prep_super_rate()
-
-        if input_user_mask is not None:
-            if not isinstance(input_user_mask, np.ndarray):
-                raise ValueError("Mask input_user_mask must be a numpy array.")
-
-            if input_user_mask.dtype != np.uint32:
-                raise ValueError("Mask input_user_mask must be of type np.uint32. Current type is:", type(input_user_mask))
-            
-            if not input_user_mask.shape == (DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT):
-                raise ValueError(f"Mask input_user_mask must have shape ({DETECTOR_PIXEL_X_COUNT}, {DETECTOR_PIXEL_Y_COUNT}). Current shape is: {input_user_mask.shape}")
-
-            logging.info("The input 2D data array is now self.mask_image.")
-            self.mask_image = input_user_mask
-
-        if self.superdark is None and self.super_rate_image is None and self.mask_image is None:
-            raise ValueError(
-                "Mask requires user to supply either input_user_mask, superdark, "
-                "super rate image, or dark/flat file_list."
-            )
+        self.dqflag_defs = dqflags
 
         logging.info("Ready to generate reference file.")
 
@@ -204,12 +174,12 @@ class Mask(ReferenceTypeMask):
             prevents single outliers or smooth RC ramps from producing
             artificially large level separations. Default is 10.
         """
-        if self.super_rate_image is not None:
+        if self.super_rate is not None:
             logging.info("Running update_mask_from_flats()")
             self.update_mask_from_flats(dead_sigma=dead_sigma,
                                         max_low_qe_signal=max_low_qe_signal,
                                         min_open_adj_signal=min_open_adj_signal)
-        if self.superdark is not None:
+        if self.super_dark is not None:
             logging.info("Running update_mask_from_darks()")
             self.update_mask_from_darks(sigma_thresh_jump=sigma_thresh_jump,
                                         min_jumps_for_rc_telegraph=min_jumps_for_rc_telegraph,
@@ -219,7 +189,7 @@ class Mask(ReferenceTypeMask):
                                         min_per_level=min_per_level)
 
         # These functions can be implemented without input files
-        logging.info("Setting REFERENCE pixels")
+        logging.info("Setting REFERENCE_PIXEL pixels")
         self.update_mask_ref_pixels()
 
         logging.info("Setting DO_NOT_USE pixels")
@@ -231,18 +201,18 @@ class Mask(ReferenceTypeMask):
                                max_low_qe_signal,
                                min_open_adj_signal):
         """
-        This function is used when ID'ing bad pixels from a super_rate_image.
+        This function is used when ID'ing bad pixels from a super_rate.
         The following bad pixels classes are identified:
             - DEAD: set_dead_pixels()
             - LOW_QE: set_low_qe_pixels()
             - OPEN and ADJ: set_open_adj_pixels()
 
-        The super_rate_image is generated in the MaskPipeline class from flat files.
+        The super_rate is generated in the MaskPipeline class from flat files.
         Since flat images are evenly illuminated pixels across the entire detector, they are ideal for
         identifying low sensitivity pixels (such as DEAD).
         """
-        logging.info("Creating normalized image with super_rate_image")
-        self.normalized_super_rate = self.normalize_super_rate_image(self.super_rate_image)
+        logging.info("Creating normalized image with super_rate")
+        self.normalized_super_rate = self.normalize_super_rate_image(self.super_rate)
 
         logging.info("Identifying DEAD pixels")
         self.set_dead_pixels(dead_sigma)
@@ -254,7 +224,7 @@ class Mask(ReferenceTypeMask):
         logging.info("All DEAD, OPEN/ADJ, LOW_QE pixels identified!")
 
 
-    def set_dead_pixels(self, dead_sigma):
+    def set_dead_pixels(self, dead_sigma, ref_pixel_border=4):
         """
         Identify the DEAD pixels using the normalized super rate image.
         A pixel is considered DEAD if it is 5 sigma below the mean
@@ -270,7 +240,12 @@ class Mask(ReferenceTypeMask):
         dead_mask = (self.normalized_super_rate < threshold).astype(np.uint32)
         dead_mask[dead_mask == 1] = dqflags.DEAD.value
 
-        self.mask_image += dead_mask
+        dead_mask[:ref_pixel_border, :] = 0
+        dead_mask[-ref_pixel_border:, :] = 0
+        dead_mask[:, :ref_pixel_border] = 0
+        dead_mask[:, -ref_pixel_border:] = 0
+
+        self.mask_image |= dead_mask
 
 
     def _get_adjacent_pix(self, x_coor, y_coor, im):
@@ -337,7 +312,7 @@ class Mask(ReferenceTypeMask):
         return adj_y, adj_x
 
 
-    def set_low_qe_open_adj_pixels(self, max_low_qe_signal, min_open_adj_signal):
+    def set_low_qe_open_adj_pixels(self, max_low_qe_signal, min_open_adj_signal, ref_pixel_border=4):
         """
         Identify LOW_QE, OPEN and ADJ pixels using the normalized super rate image.
         First, a list of coordinates of low signal pixels (defined as having a normalized
@@ -354,6 +329,11 @@ class Mask(ReferenceTypeMask):
 
         logging.info("Looping through low signal pixels to identify OPEN/ADJ/LOW_QE pixels")
         for x, y in zip(low_sig_x, low_sig_y):
+
+            # Skip calculations if this is a REFERENCE pixel
+            if (y < ref_pixel_border or y >= DETECTOR_PIXEL_Y_COUNT - ref_pixel_border or
+                x < ref_pixel_border or x >= DETECTOR_PIXEL_X_COUNT - ref_pixel_border):
+                continue
 
             # Skip calculations if this is a DEAD pixel
             if self.mask_image[y, x] & dqflags.DEAD.value == dqflags.DEAD.value:
@@ -377,9 +357,9 @@ class Mask(ReferenceTypeMask):
             else:
                 low_qe_map[y, x] = dqflags.LOW_QE.value
 
-        self.mask_image += low_qe_map.astype(np.uint32)
-        self.mask_image += open_map.astype(np.uint32)
-        self.mask_image += adj_map.astype(np.uint32)
+        self.mask_image |= low_qe_map.astype(np.uint32)
+        self.mask_image |= open_map.astype(np.uint32)
+        self.mask_image |= adj_map.astype(np.uint32)
 
 
     def set_do_not_use_pixels(self, do_not_use_flags):
@@ -407,7 +387,7 @@ class Mask(ReferenceTypeMask):
             dnupix_mask[flagged_pix] = dqflags.DO_NOT_USE.value
 
         # Adding to mask
-        self.mask_image += dnupix_mask.astype(np.uint32)
+        self.mask_image |= dnupix_mask.astype(np.uint32)
 
         return
 
@@ -535,9 +515,9 @@ class Mask(ReferenceTypeMask):
             jump stats, and two-level model metrics used to classify pixel as RC or TELEGRAPH.
             """
             y, x = coord
-            nreads = self.superdark.shape[0]
+            nreads = self.super_dark.shape[0]
             t = np.arange(1, nreads + 1) * 3.16247 # seconds
-            ramp = self.superdark[:, y, x]
+            ramp = self.super_dark[:, y, x]
 
             jump_mask_ramp = self.jump_mask_cube[:, y, x]
             jump_idx = np.where(jump_mask_ramp)[0] + 1
@@ -576,9 +556,9 @@ class Mask(ReferenceTypeMask):
                 other_bad_mask[y, x] = dqflags.OTHER_BAD_PIXEL.value
 
         # Updating the full mask
-        self.mask_image += rc_mask
-        self.mask_image += telegraph_mask
-        self.mask_image += other_bad_mask
+        self.mask_image |= rc_mask
+        self.mask_image |= telegraph_mask
+        self.mask_image |= other_bad_mask
 
         self.metrics_df = pd.DataFrame(rows)
 
@@ -1033,11 +1013,11 @@ class Mask(ReferenceTypeMask):
         4. Flag differences exceeding sigma_thresh x sigma.
 
         This method is robust to non-Gaussian outliers and effective for
-        identifying jump behavior in long superdark integrations. Jump detection
+        identifying jump behavior in long super dark integrations. Jump detection
         is used only as a screening step; classification is performed using full-ramp diagnostics.
         """
         logging.info("Creating jump products")
-        diffs = np.diff(self.superdark, axis=0)
+        diffs = np.diff(self.super_dark, axis=0)
         med = np.median(diffs, axis=0)
         mad = np.median(np.abs(diffs - med), axis=0)
         sigma = np.maximum(mad / 0.6745, eps)
@@ -1062,7 +1042,7 @@ class Mask(ReferenceTypeMask):
         refpix_mask[:, :4] = dqflags.REFERENCE_PIXEL.value
         refpix_mask[:, -4:] = dqflags.REFERENCE_PIXEL.value
 
-        self.mask_image += refpix_mask
+        self.mask_image |= refpix_mask
 
 
     def calculate_error(self):

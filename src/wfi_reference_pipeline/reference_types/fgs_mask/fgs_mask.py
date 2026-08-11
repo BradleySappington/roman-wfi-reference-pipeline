@@ -44,6 +44,7 @@ class FGSMask(ReferenceTypeMask):
         flat_filelist=None,
         input_super_dark=None,
         input_super_rate=None,
+        input_user_mask=None,
         outfile="roman_fgs_mask.asdf",
         clobber=False,
     ):
@@ -53,7 +54,7 @@ class FGSMask(ReferenceTypeMask):
 
         Parameters
         ----------
-        meta_data: WFIMetaMask object; default = None
+        meta_data: WFIMetaFGSMask object; default = None
             Object of meta information converted to dictionary when writing reference file.
         dark_filelist: list, default = None
             List of dark files used to create a superdark.
@@ -64,6 +65,10 @@ class FGSMask(ReferenceTypeMask):
         input_super_rate: np.ndarray; default = None
             This is dataproduct generated using flat-field exposures. It is a Super Flat that has been slope-fitted.
             The super_rate_image is used to identify low QE, dead, and bad flat-field pixels.
+        input_user_mask: 2D integer numpy array, default = None
+            A 2D data quality integer mask array to be applied to reference file.
+            If either a dark or flat filelist is supplied, then this input_user_mask
+            array will be added to the bad pixels identified in the darks / flats workflow.
         outfile: string; default = roman_flat.asdf
             File path and name for saved reference file.
         clobber: Boolean; default = False
@@ -78,14 +83,12 @@ class FGSMask(ReferenceTypeMask):
             meta_data,
             dark_filelist=dark_filelist,
             flat_filelist=flat_filelist,
+            input_super_dark=input_super_dark,
             input_super_rate=input_super_rate,
+            input_user_mask=input_user_mask,
             outfile=outfile,
             clobber=clobber,
         )
-
-        # The superdark and super rate images are created in the pipeline file
-        self.superdark = input_super_dark
-        self.super_rate_image = input_super_rate
 
         # Default meta creation for module specific ref type.
         if not isinstance(meta_data, WFIMetaFGSMask):
@@ -95,20 +98,9 @@ class FGSMask(ReferenceTypeMask):
         if len(self.meta_data.description) == 0:
             self.meta_data.description = "Roman WFI FGS mask reference file."
 
-        if dark_filelist and self.superdark is None:
-            self.superdark = self.prep_superdark(self.prep_path)
+        logging.info(f"Default mask reference file object: {outfile}.")
         
-        if flat_filelist and self.super_rate_image is None:
-            self.super_rate_image = self.prep_super_rate()
-
-        if self.superdark is None and self.super_rate_image is None:
-            raise ValueError(
-                "Mask requires user to supply either superdark, "
-                "super rate image, or dark/flat file_list."
-            )
-
-        # Initializing mask image array
-        self.mask_image = np.zeros((4096, 4096), dtype=np.uint32)
+        self.dqflag_defs = FGSFlags
 
         logging.info("Ready to generate reference file.")
 
@@ -145,7 +137,7 @@ class FGSMask(ReferenceTypeMask):
             Normalized super rate threshold below which pixels are flagged as bad flat field. Default is 0.0.
         """
         logging.info("Creating the normalized super rate image")
-        self.normalized_super_rate = self.normalize_super_rate_image(self.super_rate_image)
+        self.normalized_super_rate = self.normalize_super_rate_image(self.super_rate)
         
         logging.info("Creating the CDS noise and dark rate images")
         self.create_cds_noise_darkrate_im(do_sigma_clip=do_sigma_clip,
@@ -186,13 +178,13 @@ class FGSMask(ReferenceTypeMask):
             Number of standard deviations below the median used as the dead
             pixel threshold. Default is 5.0.
         """
-        median_slope = np.median(self.super_rate_image)
-        std_slope = np.std(self.super_rate_image)
+        median_slope = np.median(self.super_rate)
+        std_slope = np.std(self.super_rate)
 
         dead_threshold = median_slope - (dead_sigma_thr * std_slope)
-        dead_mask = self.super_rate_image < dead_threshold
+        dead_mask = self.super_rate < dead_threshold
 
-        self.mask_image[dead_mask] += FGSFlags.DEAD
+        self.mask_image[dead_mask] |= FGSFlags.DEAD
 
         return
     
@@ -211,10 +203,10 @@ class FGSMask(ReferenceTypeMask):
             Dark rate threshold in DN above which pixels are flagged as superhot. Default is 20.0.
         """
         hot_mask = self.darkrate_image > hot_thr
-        self.mask_image[hot_mask] += FGSFlags.HOT_PIXEL
+        self.mask_image[hot_mask] |= FGSFlags.HOT_PIXEL
 
         superhot_mask = self.darkrate_image > superhot_thr
-        self.mask_image[superhot_mask] += FGSFlags.SUPERHOT_PIXEL
+        self.mask_image[superhot_mask] |= FGSFlags.SUPERHOT_PIXEL
 
         return
 
@@ -228,7 +220,7 @@ class FGSMask(ReferenceTypeMask):
             CDS noise threshold in DN above which pixels are flagged. Default is 11.0.
         """
         cds_mask = self.cds_noise > high_cds_thr
-        self.mask_image[cds_mask] += FGSFlags.HIGH_CDS_NOISE
+        self.mask_image[cds_mask] |= FGSFlags.HIGH_CDS_NOISE
 
         return
 
@@ -243,7 +235,7 @@ class FGSMask(ReferenceTypeMask):
             low QE. Default is 0.3.
         """
         qe_mask = self.normalized_super_rate < low_qe_thr
-        self.mask_image[qe_mask] += FGSFlags.LOW_QE_OPTICAL
+        self.mask_image[qe_mask] |= FGSFlags.LOW_QE_OPTICAL
 
         return
 
@@ -258,7 +250,7 @@ class FGSMask(ReferenceTypeMask):
             bad flat field. Default is 0.0.
         """
         flat_mask = self.normalized_super_rate < bad_flat_thr
-        self.mask_image[flat_mask] += FGSFlags.FLAT_FIELD
+        self.mask_image[flat_mask] |= FGSFlags.FLAT_FIELD
 
         return
 
@@ -281,7 +273,7 @@ class FGSMask(ReferenceTypeMask):
             Upper sigma threshold for CDS noise sigma clipping. Default is 5.0.
         """
         logging.info("Creating ReadNoise data cube")
-        self.readnoise_cube = ReadNoise.ReadNoiseDataCube(self.superdark,
+        self.readnoise_cube = ReadNoise.ReadNoiseDataCube(self.super_dark,
                                                           WFI_TYPE_IMAGE)
         # Prep CDS noise computations
         self.readnoise_cube.fit_cube(degree=1)
