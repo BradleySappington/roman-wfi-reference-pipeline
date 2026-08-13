@@ -624,7 +624,7 @@ class ReferenceTypeMask(ABC):
         logging.info(f"Saved {self.outfile}")
 
     @abstractmethod
-    def _populate_datamodel_tree(self):
+    def populate_datamodel_tree(self):
         """
         Enforcing data model validation before writing file and used in schema testing.
         """
