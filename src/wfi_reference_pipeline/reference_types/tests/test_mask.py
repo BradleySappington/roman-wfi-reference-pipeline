@@ -214,7 +214,7 @@ class TestMask:
 
     def test_no_input_raises(self, valid_meta_data):
         """
-        Test that Mask raises ValueError when no input_user_mask, superdark,
+        Test that Mask raises ValueError when no input_user_mask, super dark,
         super rate image, or dark/flat filelist is supplied.
         """
         with pytest.raises(ValueError):

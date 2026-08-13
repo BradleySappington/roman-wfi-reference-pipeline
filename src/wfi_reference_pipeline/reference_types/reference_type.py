@@ -83,7 +83,6 @@ class ReferenceType(ABC):
         self.clobber = clobber
         self.mask_size = mask_size
 
-        #TODO fix importing dq flags from romancal
         # Load DQ flag definitions from romancal
         self.dqflag_defs = dqflags.pixel
 
@@ -211,7 +210,7 @@ class ReferenceTypeMask(ABC):
 
     Monthly Workflow
     ----------------
-    A new superdark and super rate are generated from required input files.
+    A new super dark and super rate are generated from required input files.
 
     Required:
         - dark_filelist
@@ -219,7 +218,7 @@ class ReferenceTypeMask(ABC):
 
     Weekly Workflow
     ---------------
-    A new superdark is generated while an existing super rate is reused.
+    A new super dark is generated while an existing super rate is reused.
 
     Required:
         - dark_filelist
@@ -231,7 +230,7 @@ class ReferenceTypeMask(ABC):
         Metadata object whose reference_type must be one of
         WFI_MASK_REF_TYPES.
     dark_filelist: list
-        List of dark files used to create a superdark.
+        List of dark files used to create a super dark.
     flat_filelist: list, optional
         List of flat files used to create a super rate.
         Required for the monthly workflow.
@@ -309,30 +308,30 @@ class ReferenceTypeMask(ABC):
 
         # Creating super darks / rates as necessary
         if self.super_dark is None and self.dark_filelist:
-            self.super_dark = self.prep_super_dark(self.outdir)
+            self.super_dark = self._prep_super_dark(self.outdir)
 
         if self.super_rate is None and self.flat_filelist:
-            self.super_rate = self.prep_super_rate(self.outdir)
+            self.super_rate = self._prep_super_rate(self.outdir)
 
         if self.super_dark is None and self.super_rate is None and input_user_mask is None:
             raise ValueError(
-                            "Mask requires user to supply either input_user_mask, superdark, "
+                            "Mask requires user to supply either input_user_mask, super dark, "
                             "super rate image, or dark/flat file_list."
                         )
 
 
-    def prep_super_dark(self, prep_path):
+    def _prep_super_dark(self, prep_path):
         """
-        Create a superdark from the prepped self.dark_filelist files.
-        This function uses the DarkPipeline superdark code. 
+        Create a super dark from the prepped self.dark_filelist files.
+        This function uses the DarkPipeline super dark code. 
 
         Parameters
         ----------
         prep_path: str
-            Path to save the superdark. Superdarks are saved by default.
+            Path to save the super dark. Super darks are saved by default.
         """
         from wfi_reference_pipeline.pipelines.dark_pipeline import DarkPipeline
-        # Need the number of reads to run the superdark code
+        # Need the number of reads to run the super dark code
         nreads = self._get_nreads()
 
         # Setting the superdark path to be in the same dir as the prepped files
@@ -341,9 +340,9 @@ class ReferenceTypeMask(ABC):
         superdark_filename = f"superdark_for_{self.meta_data.reference_type}_{detector}.asdf"
         self.superdark_path = os.path.join(prep_path, superdark_filename)
 
-        logging.info("Creating superdark and writing file to", self.superdark_path)
+        logging.info("Creating super dark and writing file to %s", self.superdark_path)
 
-        # Creating the dark pipeline object and creating the superdark
+        # Creating the dark pipeline object and creating the super dark
         dark_pipe = DarkPipeline(detector)
         dark_pipe.prep_superdark_file(
             short_file_list=self.dark_filelist,
@@ -351,7 +350,7 @@ class ReferenceTypeMask(ABC):
             short_dark_num_reads=nreads,
         )
 
-        # Return the superdark
+        # Return the super dark
         return self._load_superdark()
 
 
@@ -369,8 +368,8 @@ class ReferenceTypeMask(ABC):
     
 
     def _load_superdark(self):
-        """Load the newly-created superdark file"""
-        logging.info("Loading superdark from", self.superdark_path)
+        """Load the newly-created super dark file"""
+        logging.info("Loading super dark from", self.superdark_path)
 
         with asdf.open(self.superdark_path, memmap=True) as af:
             data = af["roman"]["data"]
@@ -378,7 +377,7 @@ class ReferenceTypeMask(ABC):
             return np.asarray(superdark)
     
 
-    def prep_super_rate(self, prep_path, sig_clip_low=3.0, sig_clip_high=3.0):
+    def _prep_super_rate(self, prep_path, sig_clip_low=3.0, sig_clip_high=3.0):
         """
         This function creates a super rate image by averaging the inputted flat rate files.
 
@@ -453,7 +452,7 @@ class ReferenceTypeMask(ABC):
 
     def _save_super_rate_image(self, super_rate_image, prep_path, file_permission=0o666):
         """
-        Save the super rate image to the same path as the superdark.
+        Save the super rate image to the same path as the super dark.
         """
         detector = self.meta_data.instrument_detector
 
@@ -480,11 +479,12 @@ class ReferenceTypeMask(ABC):
         os.chmod(self.super_rate_path, file_permission)
 
 
-    def normalize_super_rate_image(self, super_rate_image):
+    def _normalize_super_rate_image(self, super_rate_image):
         """
         Computes the normalized super rate image by dividing the super rate
         image by its nanmean.
         """
+        logging.info("Creating the normalized super rate image")
         return super_rate_image / np.nanmean(super_rate_image)
 
 
@@ -553,7 +553,7 @@ class ReferenceTypeMask(ABC):
                 f"{expected_shape}. Got {image.shape}."
             )
 
-    def check_outfile(self):
+    def _check_outfile(self):
         """
         Check if the output file exists, and take appropriate action.
         """
@@ -589,10 +589,10 @@ class ReferenceTypeMask(ABC):
             raise ValueError("Output file path 'outfile' is not specified.")
 
         # Resolve data model or tree
-        obj = datamodel_tree if datamodel_tree else self.populate_datamodel_tree()
+        obj = datamodel_tree if datamodel_tree else self._populate_datamodel_tree()
 
         # check to see if file currently exists
-        self.check_outfile()
+        self._check_outfile()
 
         if self.meta_data.reference_type == REF_TYPE_MASK:
             if not hasattr(obj, "save"):
@@ -624,7 +624,7 @@ class ReferenceTypeMask(ABC):
         logging.info(f"Saved {self.outfile}")
 
     @abstractmethod
-    def populate_datamodel_tree(self):
+    def _populate_datamodel_tree(self):
         """
         Enforcing data model validation before writing file and used in schema testing.
         """

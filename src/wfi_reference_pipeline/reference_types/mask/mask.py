@@ -11,6 +11,7 @@ from scipy.stats import anderson, kurtosis, linregress, skew
 from wfi_reference_pipeline.constants import (
     DETECTOR_PIXEL_X_COUNT,
     DETECTOR_PIXEL_Y_COUNT,
+    VIRTUAL_PIXEL_DEPTH,
 )
 from wfi_reference_pipeline.reference_types.reference_type import ReferenceTypeMask
 from wfi_reference_pipeline.resources.wfi_meta_mask import WFIMetaMask
@@ -60,13 +61,13 @@ class Mask(ReferenceTypeMask):
         meta_data: WFIMetaMask object, default = None
             Object of meta information converted to dictionary when writing reference file.
         dark_filelist: list, default = None
-                List of dark files used to create a superdark.
+                List of dark files used to create a super dark.
         flat_filelist: list, optional
-            List of flat files used to create a superslope. Required for monthly workflow
+            List of flat files used to create a super rate. Required for monthly workflow
         input_super_dark: np.ndarray; default = None
-            The superdark that will be used to calculate the dark rate images / ramps.
+            The super dark that will be used to calculate the dark rate images / ramps.
         input_super_rate: numpy.ndarray, optional
-            Existing superslope image. Required for the weekly workflow.
+            Existing super rate image. Required for the weekly workflow.
         input_user_mask: 2D integer numpy array, default = None
             A 2D data quality integer mask array to be applied to reference file.
             If either a dark or flat filelist is supplied, then this input_user_mask
@@ -175,28 +176,27 @@ class Mask(ReferenceTypeMask):
             artificially large level separations. Default is 10.
         """
         if self.super_rate is not None:
-            logging.info("Running update_mask_from_flats()")
-            self.update_mask_from_flats(dead_sigma=dead_sigma,
-                                        max_low_qe_signal=max_low_qe_signal,
-                                        min_open_adj_signal=min_open_adj_signal)
+            self._update_mask_from_flats(
+                dead_sigma,
+                max_low_qe_signal,
+                min_open_adj_signal,
+            )
         if self.super_dark is not None:
-            logging.info("Running update_mask_from_darks()")
-            self.update_mask_from_darks(sigma_thresh_jump=sigma_thresh_jump,
-                                        min_jumps_for_rc_telegraph=min_jumps_for_rc_telegraph,
-                                        noise_sigma=noise_sigma,
-                                        rc_thresh_ratio_tiebreaker=rc_thresh_ratio_tiebreaker,
-                                        tg_thresh_ratio_tiebreaker=tg_thresh_ratio_tiebreaker,
-                                        min_per_level=min_per_level)
+            self._update_mask_from_darks(
+                sigma_thresh_jump,
+                min_jumps_for_rc_telegraph,
+                noise_sigma,
+                rc_thresh_ratio_tiebreaker,
+                tg_thresh_ratio_tiebreaker,
+                min_per_level,
+            )
 
         # These functions can be implemented without input files
-        logging.info("Setting REFERENCE_PIXEL pixels")
-        self.update_mask_ref_pixels()
-
-        logging.info("Setting DO_NOT_USE pixels")
-        self.set_do_not_use_pixels(do_not_use_flags=do_not_use_flags)
+        self._update_mask_ref_pixels()
+        self._set_do_not_use_pixels(do_not_use_flags)
 
 
-    def update_mask_from_flats(self,
+    def _update_mask_from_flats(self,
                                dead_sigma,
                                max_low_qe_signal,
                                min_open_adj_signal):
@@ -211,25 +211,27 @@ class Mask(ReferenceTypeMask):
         Since flat images are evenly illuminated pixels across the entire detector, they are ideal for
         identifying low sensitivity pixels (such as DEAD).
         """
-        logging.info("Creating normalized image with super_rate")
-        self.normalized_super_rate = self.normalize_super_rate_image(self.super_rate)
+        logging.info("Running update_mask_from_flats()")
+        self.normalized_super_rate = self._normalize_super_rate_image(self.super_rate)
 
-        logging.info("Identifying DEAD pixels")
-        self.set_dead_pixels(dead_sigma)
+        self._set_dead_pixels(dead_sigma)
+        self._set_low_qe_open_adj_pixels(
+            max_low_qe_signal,
+            min_open_adj_signal,
+        )
 
-        logging.info("Identifying LOW_QE and OPEN/ADJ pixels")
-        self.set_low_qe_open_adj_pixels(max_low_qe_signal,
-                                        min_open_adj_signal)
-
-        logging.info("All DEAD, OPEN/ADJ, LOW_QE pixels identified!")
+        logging.info("Finished running update_mask_from_flats()")
 
 
-    def set_dead_pixels(self, dead_sigma, ref_pixel_border=4):
+    def _set_dead_pixels(self, dead_sigma):
         """
         Identify the DEAD pixels using the normalized super rate image.
         A pixel is considered DEAD if it is 5 sigma below the mean
         of the normalized image.
+
+        Note: Reference pixels are excluded from DEAD pixel identification.
         """
+        logging.info("Identifying DEAD pixels")
         norm_mean = np.nanmean(self.normalized_super_rate)
         norm_std = np.nanstd(self.normalized_super_rate)
 
@@ -240,11 +242,12 @@ class Mask(ReferenceTypeMask):
         dead_mask = (self.normalized_super_rate < threshold).astype(np.uint32)
         dead_mask[dead_mask == 1] = dqflags.DEAD.value
 
-        dead_mask[:ref_pixel_border, :] = 0
-        dead_mask[-ref_pixel_border:, :] = 0
-        dead_mask[:, :ref_pixel_border] = 0
-        dead_mask[:, -ref_pixel_border:] = 0
+        dead_mask[:VIRTUAL_PIXEL_DEPTH, :] = 0
+        dead_mask[-VIRTUAL_PIXEL_DEPTH:, :] = 0
+        dead_mask[:, :VIRTUAL_PIXEL_DEPTH] = 0
+        dead_mask[:, -VIRTUAL_PIXEL_DEPTH:] = 0
 
+        # Bitwise OR merges flags safely; addition could overflow shared bits
         self.mask_image |= dead_mask
 
 
@@ -312,7 +315,7 @@ class Mask(ReferenceTypeMask):
         return adj_y, adj_x
 
 
-    def set_low_qe_open_adj_pixels(self, max_low_qe_signal, min_open_adj_signal, ref_pixel_border=4):
+    def _set_low_qe_open_adj_pixels(self, max_low_qe_signal, min_open_adj_signal, ref_pixel_border=4):
         """
         Identify LOW_QE, OPEN and ADJ pixels using the normalized super rate image.
         First, a list of coordinates of low signal pixels (defined as having a normalized
@@ -321,13 +324,14 @@ class Mask(ReferenceTypeMask):
         if ALL of these four pixels are >1.05 norm im. If so, then this is a OPEN/ADJ
         pixel. Otherwise, then just the center is marked as LOW_QE.
         """
+        logging.info("Identifying LOW_QE and OPEN/ADJ pixels")
+
         low_qe_map = np.zeros((DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT), dtype=np.uint32)
         open_map = np.zeros((DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT), dtype=np.uint32)
         adj_map = np.zeros((DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT), dtype=np.uint32)
 
         low_sig_y, low_sig_x = np.where(self.normalized_super_rate < max_low_qe_signal)
 
-        logging.info("Looping through low signal pixels to identify OPEN/ADJ/LOW_QE pixels")
         for x, y in zip(low_sig_x, low_sig_y):
 
             # Skip calculations if this is a REFERENCE pixel
@@ -357,18 +361,23 @@ class Mask(ReferenceTypeMask):
             else:
                 low_qe_map[y, x] = dqflags.LOW_QE.value
 
+        # Bitwise OR merges flags safely; addition could overflow shared bits
         self.mask_image |= low_qe_map.astype(np.uint32)
         self.mask_image |= open_map.astype(np.uint32)
         self.mask_image |= adj_map.astype(np.uint32)
 
 
-    def set_do_not_use_pixels(self, do_not_use_flags):
+    def _set_do_not_use_pixels(self, do_not_use_flags, /):
         """
         This function adds the DO_NOT_USE flag to pixels with flags:
             DEAD
+            TELEGRAPH
+            OTHER_BAD_PIXEL
+            RESERVED_7 (RC/IRC)
         DO_NOT_USE pixels are excluded in subsequent pipeline processing.
         More flags may be added after further analyses.
         """
+        logging.info("Setting DO_NOT_USE pixels")
         dnupix_mask = np.zeros((DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT),
                                dtype=np.uint32)
 
@@ -386,21 +395,28 @@ class Mask(ReferenceTypeMask):
             # Setting flagged pix to DNU bitval
             dnupix_mask[flagged_pix] = dqflags.DO_NOT_USE.value
 
-        # Adding to mask
+        # Bitwise OR merges flags safely; addition could overflow shared bits
         self.mask_image |= dnupix_mask.astype(np.uint32)
 
         return
 
 
-    def update_mask_from_darks(self, sigma_thresh_jump, min_jumps_for_rc_telegraph, noise_sigma, rc_thresh_ratio_tiebreaker, tg_thresh_ratio_tiebreaker, min_per_level):
+    def _update_mask_from_darks(self,
+                               sigma_thresh_jump,
+                               min_jumps_for_rc_telegraph,
+                               noise_sigma,
+                               rc_thresh_ratio_tiebreaker,
+                               tg_thresh_ratio_tiebreaker,
+                               min_per_level,
+                               /):
         """
         This function is used when identifying bad pixels from long dark files (350 reads).
         The following bad pixel classes are identified:
             - RC and TELEGRAPH: set_rc_tel_pixels()
 
-        The filelist is a list of IRRC-corrected dark files, and a superdark must be created.
+        The filelist is a list of IRRC-corrected dark files, and a super dark must be created.
         Since both RC and telegraph pixels have anomalous behavior as they accumulate
-        charge, a superdark is ideal for detecting weird ramp shapes.
+        charge, a super dark is ideal for detecting weird ramp shapes.
 
         Notes
         -----
@@ -409,18 +425,28 @@ class Mask(ReferenceTypeMask):
         MAD-based jump detector; only pixels with detected jumps
         are subjected to RC/telegraph classification.
         """
-        logging.info("Computing MAD-based jump counts for all pixels")
-        self.mad_based_jump_counter_cube(sigma_thresh_jump=sigma_thresh_jump)
+        logging.info("Running update_mask_from_darks()")
 
-        logging.info("Identifying TELEGRAPH and RC pixels")
-        self.set_rc_tel_pixels(min_jumps_for_rc_telegraph=min_jumps_for_rc_telegraph, 
-                               noise_sigma=noise_sigma,
-                               rc_thresh_ratio_tiebreaker=rc_thresh_ratio_tiebreaker,
-                               tg_thresh_ratio_tiebreaker=tg_thresh_ratio_tiebreaker,
-                               min_per_level=min_per_level)
+        self._mad_based_jump_counter_cube(sigma_thresh_jump)
+
+        self._set_rc_tel_pixels(
+            min_jumps_for_rc_telegraph,
+            noise_sigma,
+            rc_thresh_ratio_tiebreaker,
+            tg_thresh_ratio_tiebreaker,
+            min_per_level,
+        )
+
+        logging.info("Finished running update_mask_from_darks()")
 
 
-    def set_rc_tel_pixels(self, min_jumps_for_rc_telegraph, noise_sigma, rc_thresh_ratio_tiebreaker, tg_thresh_ratio_tiebreaker, min_per_level):
+    def _set_rc_tel_pixels(self,
+                          min_jumps_for_rc_telegraph,
+                          noise_sigma,
+                          rc_thresh_ratio_tiebreaker,
+                          tg_thresh_ratio_tiebreaker,
+                          min_per_level,
+                          /):
         """
         Classify pixels exhibiting jump behavior as RC (double exponential behavior)
         or telegraph (multi-level switching) using per-pixel ramp diagnostics.
@@ -470,7 +496,7 @@ class Mask(ReferenceTypeMask):
         Inputs
         ------
         superdark : ndarray
-            The (nreads, ny, nx) superdark cube
+            The (nreads, ny, nx) super dark cube
         jump_count : ndarray
             Integer (ny, nx) array giving the number of MAD-based jumps per pixel
 
@@ -495,6 +521,7 @@ class Mask(ReferenceTypeMask):
           between known RC and telegraph populations.
         - Ambiguous cases are conservatively flagged as OTHER_BAD_PIXEL.
         """
+        logging.info("Identifying TELEGRAPH and RC pixels")
         # Empty masks to be populated with the positions of the RC and TELEGRAPH pixels, and OTHER
         rc_mask = np.zeros((DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT), dtype=np.uint32)
         telegraph_mask = np.zeros((DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT), dtype=np.uint32)
@@ -506,7 +533,7 @@ class Mask(ReferenceTypeMask):
         # Create coord list to run in parallel
         cand_coords = list(zip(cand_y.tolist(), cand_x.tolist()))
 
-        # Having this function within set_rc_tel_pixels allows us to not have to pass in superdark; saves mem
+        # Having this function within set_rc_tel_pixels allows us to not have to pass in super dark; saves mem
         # TODO brad probably knows a better way to save memory :)
         def _process_pixel_rc_tel(coord):
             """
@@ -523,12 +550,23 @@ class Mask(ReferenceTypeMask):
             jump_idx = np.where(jump_mask_ramp)[0] + 1
             jump_count_pix = int(jump_mask_ramp.sum())
 
-            metrics = self.compute_metrics_for_pixel_rc_tel(ramp, t, jump_idx, jump_count_pix, noise_sigma, min_per_level)
+            metrics = self._compute_metrics_for_pixel_rc_tel(
+                ramp,
+                t,
+                jump_idx,
+                jump_count_pix,
+                noise_sigma,
+                min_per_level,
+            )
 
             metrics["y"] = y
             metrics["x"] = x
 
-            label_new, rc_votes, tg_votes = self.classify_rc_vs_tele(metrics, rc_thresh_ratio_tiebreaker, tg_thresh_ratio_tiebreaker)
+            label_new, rc_votes, tg_votes = self._classify_rc_vs_tele(
+                metrics,
+                rc_thresh_ratio_tiebreaker,
+                tg_thresh_ratio_tiebreaker,
+            )
 
             metrics["label_new"] = label_new
             metrics["rc_votes"] = rc_votes
@@ -555,7 +593,7 @@ class Mask(ReferenceTypeMask):
             elif label == "Ambig" or label == "UNKNOWN":
                 other_bad_mask[y, x] = dqflags.OTHER_BAD_PIXEL.value
 
-        # Updating the full mask
+        # Bitwise OR merges flags safely; addition could overflow shared bits
         self.mask_image |= rc_mask
         self.mask_image |= telegraph_mask
         self.mask_image |= other_bad_mask
@@ -563,7 +601,7 @@ class Mask(ReferenceTypeMask):
         self.metrics_df = pd.DataFrame(rows)
 
 
-    def classify_rc_vs_tele(self, metrics_row, rc_thresh_ratio_tiebreaker, tg_thresh_ratio_tiebreaker):
+    def _classify_rc_vs_tele(self, metrics_row, rc_thresh_ratio_tiebreaker, tg_thresh_ratio_tiebreaker, /):
         """
         Voting-based classifier using multiple diagnostics.
         No single metric is decisive; agreement across metrics determines
@@ -671,7 +709,7 @@ class Mask(ReferenceTypeMask):
         return label, rc_votes, tg_votes
 
 
-    def compute_metrics_for_pixel_rc_tel(self, ramp, t, jump_idx, jump_count_pix, noise_sigma, min_per_level):
+    def _compute_metrics_for_pixel_rc_tel(self, ramp, t, jump_idx, jump_count_pix, noise_sigma, min_per_level, /):
         """
         Compute per-pixel diagnostics used to classify RC vs TELEGRAPH behavior.
 
@@ -690,7 +728,7 @@ class Mask(ReferenceTypeMask):
         """
         try:
             # Try an RC (double exp.) fit on the ramp
-            ramp_fit_rc, n_params = self.fit_rc_safe(t, ramp)
+            ramp_fit_rc, n_params = self._fit_rc_safe(t, ramp)
 
         # Every fit failed... returning metrics full of NaNs
         except Exception:
@@ -726,10 +764,10 @@ class Mask(ReferenceTypeMask):
         ad_stat, _, _ = anderson(dr, dist="norm")
 
         # Compute bimodality coefficient metric
-        bc = self.bimodality_coefficient(dr)
+        bc = self._bimodality_coefficient(dr)
 
         # Calculate the segment slopes
-        slopes, slope_sigmas, seg_means = self.segment_slopes(t, ramp, jump_idx)
+        slopes, slope_sigmas, seg_means = self._segment_slopes(t, ramp, jump_idx)
 
         if slopes.size > 0:
             frac_flat = float(np.mean(slope_sigmas < 1.0))
@@ -739,7 +777,7 @@ class Mask(ReferenceTypeMask):
             frac_flat = np.nan
 
         # Fit the telegraph two-level model
-        ramp_tg, low, high = self.simple_two_level_model(ramp, min_per_level)
+        ramp_tg, low, high = self._simple_two_level_model(ramp, min_per_level)
 
         # Calculating red. chi2 for the two level model
         dof_tg = max(len(ramp) - 2, 1)
@@ -780,7 +818,7 @@ class Mask(ReferenceTypeMask):
         )
 
 
-    def simple_two_level_model(self, ramp, min_per_level):
+    def _simple_two_level_model(self, ramp, min_per_level, /):
         """
         Construct a two-level (telegraph) approximation to a ramp.
 
@@ -838,7 +876,8 @@ class Mask(ReferenceTypeMask):
         # Return the telegraph fit and the L/H medians
         return ramp_tg, low_med, high_med
 
-    def segment_slopes(self, t, ramp, jump_idx):
+
+    def _segment_slopes(self, t, ramp, jump_idx):
         """
         Get the slopes of the level segments.
         Used for telegraph identification since segments' slopes
@@ -868,7 +907,8 @@ class Mask(ReferenceTypeMask):
 
         return np.array(slopes), np.array(slope_sigmas), np.array(seg_means)
 
-    def bimodality_coefficient(self, dr):
+
+    def _bimodality_coefficient(self, dr):
         """
         Calculate the bimodality coefficient for the residuals of ramp.
         """
@@ -881,7 +921,8 @@ class Mask(ReferenceTypeMask):
 
         return (g1**2 + 1) / (g2 + 3 * ((n-1)**2) / ((n-2)*(n-3)))
 
-    def fit_rc_safe(self, t, y):
+
+    def _fit_rc_safe(self, t, y):
         """
         Stable RC-like fit with fallbacks:
         1) Double exponential in log-tau space (first attempt)
@@ -906,7 +947,7 @@ class Mask(ReferenceTypeMask):
         upper = [1e6, np.log(1e6), 1e6, np.log(1e6), np.max(y) + 500]
 
         # 1) Try a double exponential fit
-        def rc_model_transformed(t, a1, log_tau1, a2, log_tau2, c):
+        def _rc_model_transformed(t, a1, log_tau1, a2, log_tau2, c):
             tau1 = np.exp(log_tau1)
             tau2 = np.exp(log_tau2)
 
@@ -915,14 +956,14 @@ class Mask(ReferenceTypeMask):
         try:
             # Fitting D.E.
             popt, _ = curve_fit(
-                rc_model_transformed,
+                _rc_model_transformed,
                 t, y,
                 p0=p0,
                 bounds=(lower, upper),
                 method="trf",
                 maxfev=600,
             )
-            y_rc = rc_model_transformed(t, *popt)
+            y_rc = _rc_model_transformed(t, *popt)
 
             # Return the model D.E. and number of parameters
             return y_rc, len(popt)
@@ -931,7 +972,7 @@ class Mask(ReferenceTypeMask):
             pass
 
         # 2) Try a single exponential fit if double exponential fit fails
-        def single_exp(t, a, tau, c):
+        def _single_exp(t, a, tau, c):
             return a * np.exp(-t / tau) + c
 
         try:
@@ -946,14 +987,14 @@ class Mask(ReferenceTypeMask):
 
             # Fitting single exp.
             popt_s, _ = curve_fit(
-                single_exp,
+                _single_exp,
                 t, y,
                 p0=p0_single,
                 bounds=(lower_s, upper_s),
                 method="trf",
                 maxfev=600,
             )
-            y_rc = single_exp(t, *popt_s)
+            y_rc = _single_exp(t, *popt_s)
 
             # Return the model single exp. and number of parameters
             return y_rc, len(popt_s)
@@ -975,10 +1016,10 @@ class Mask(ReferenceTypeMask):
             return None, None
 
 
-    def mad_based_jump_counter_cube(self, sigma_thresh_jump, eps=1e-8):
+    def _mad_based_jump_counter_cube(self, sigma_thresh_jump, eps=1e-8):
         """
         Compute a robust, MAD-based jump mask and per-pixel jump count
-        for a full ramp superdark cube.
+        for a full ramp super dark cube.
 
         This routine identifies statistically significant discontinuities
         ("jumps") between successive reads of a ramp using the Median Absolute
@@ -1016,7 +1057,7 @@ class Mask(ReferenceTypeMask):
         identifying jump behavior in long super dark integrations. Jump detection
         is used only as a screening step; classification is performed using full-ramp diagnostics.
         """
-        logging.info("Creating jump products")
+        logging.info("Computing MAD-based jump counts for all pixels")
         diffs = np.diff(self.super_dark, axis=0)
         med = np.median(diffs, axis=0)
         mad = np.median(np.abs(diffs - med), axis=0)
@@ -1029,11 +1070,12 @@ class Mask(ReferenceTypeMask):
         self.jump_count_img = np.count_nonzero(self.jump_mask_cube, axis=0).astype(np.int16)
 
 
-    def update_mask_ref_pixels(self):
+    def _update_mask_ref_pixels(self):
         """
         Create array to flag the 4 px reference pixel border around detector.
         The reference pixels are static and need no algorithm for identification.
         """
+        logging.info("Setting REFERENCE_PIXEL pixels")
         refpix_mask = np.zeros((DETECTOR_PIXEL_X_COUNT, DETECTOR_PIXEL_Y_COUNT),
                                dtype=np.uint32)
 
@@ -1042,6 +1084,7 @@ class Mask(ReferenceTypeMask):
         refpix_mask[:, :4] = dqflags.REFERENCE_PIXEL.value
         refpix_mask[:, -4:] = dqflags.REFERENCE_PIXEL.value
 
+        # Bitwise OR merges flags safely; addition could overflow shared bits
         self.mask_image |= refpix_mask
 
 
