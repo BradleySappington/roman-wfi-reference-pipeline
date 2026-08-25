@@ -217,6 +217,10 @@ def update_etc_form_from_crds(output_dir):
             with rdm.open(filepath) as ref:
                 det = ref.meta.instrument.detector
                 val = float(np.median(ref.data))
+
+                # Correct the gain values to account for IPC + small uncorrected nonlinearity
+                # Value is from T. Brandt
+                # See the Gain module for the actual value and its full explanation
                 val_corrected = val / GAIN_CORRECTION_FACTOR
                 print(f"{det}: gain -> {val:.2f}, gain_corrected -> {val_corrected:.2f}")
 
