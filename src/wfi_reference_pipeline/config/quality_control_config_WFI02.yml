@@ -14,7 +14,7 @@ dark:
       refpix: true
       darkdecay: true
       wfi18transient: true
-      rampfit: true
+      rampfit: false
   pipeline:
     checks:
       mean_dark_rate: true
