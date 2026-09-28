@@ -51,66 +51,14 @@ class SubmissionForm:
         self._fill_submission_form_with_crds_config()
 
     def _fill_submission_form_with_crds_config(self):
+        """
+        The dataclass already has defaults set, they should each be replaced with the crds submission_form
+        values.  If for some reason that value doesn't exist, the default value will remain unchanged.
+        """
         crds_submission_config = get_crds_submission_config()["submission_form"]
-        self.deliverer = crds_submission_config.get("deliverer", self.deliverer)
-        self.other_email = crds_submission_config.get("other_email", self.other_email)
-        self.file_type = crds_submission_config.get("file_type", self.file_type)
-        self.history_updated = crds_submission_config.get(
-            "history_updated", self.history_updated
-        )
-        self.pedigree_updated = crds_submission_config.get(
-            "pedigree_updated", self.pedigree_updated
-        )
-        self.keywords_checked = crds_submission_config.get(
-            "keywords_checked", self.keywords_checked
-        )
-        self.descrip_updated = crds_submission_config.get(
-            "descrip_updated", self.descrip_updated
-        )
-        self.useafter_updated = crds_submission_config.get(
-            "useafter_updated", self.useafter_updated
-        )
-        self.useafter_matches = crds_submission_config.get(
-            "useafter_matches", self.useafter_matches
-        )
-        self.compliance_verified = crds_submission_config.get(
-            "compliance_verified", self.compliance_verified
-        )
-        self.etc_delivery = crds_submission_config.get(
-            "etc_delivery", self.etc_delivery
-        )
-        self.calpipe_version = crds_submission_config.get(
-            "calpipe_version", self.calpipe_version
-        )
-        self.replacement_files = crds_submission_config.get(
-            "replacement_files", self.replacement_files
-        )
-        self.old_reference_files = crds_submission_config.get(
-            "old_reference_files", self.old_reference_files
-        )
-        self.replacing_badfiles = crds_submission_config.get(
-            "replacing_badfiles", self.replacing_badfiles
-        )
-        self.jira_issue = crds_submission_config.get("jira_issue", self.jira_issue)
-        self.table_rows_changed = crds_submission_config.get(
-            "table_rows_changed", self.table_rows_changed
-        )
-        self.reprocess_affected = crds_submission_config.get(
-            "reprocess_affected", self.reprocess_affected
-        )
-        self.modes_affected = crds_submission_config.get(
-            "modes_affected", self.modes_affected
-        )
-        self.change_level = crds_submission_config.get(
-            "change_level", self.change_level
-        )
-        self.correctness_testing = crds_submission_config.get(
-            "correctness_testing", self.correctness_testing
-        )
-        self.additional_considerations = crds_submission_config.get(
-            "additional_considerations", self.additional_considerations
-        )
-        self.description = crds_submission_config.get("description", self.description)
+        for key, value in crds_submission_config.items():
+            setattr(self, key, value)
+
 
     def as_dict(self) -> dict:
         return self.__dict__
