@@ -14,7 +14,7 @@ permissions: {}
 
 jobs:
   validate:
-    if: (github.repository == 'spacetelescope/jwst-pure-parallel') && (github.event_name == 'workflow_dispatch')
+    if: (github.repository == 'spacetelescope/roman-wfi-reference-pipeline') && (github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     outputs:
       job_tag: ${{ steps.tag_name.outputs.tag }}
@@ -43,12 +43,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Get Release Tag From Release
-        if: (github.repository == 'spacetelescope/jwst-pure-parallel') && (github.event_name == 'release')
+        if: (github.repository == 'spacetelescope/roman-wfi-reference-pipeline') && (github.event_name == 'release')
         run: |
           echo "TAG=${{ github.ref }}" >> $GITHUB_ENV
           echo "Release being made from ${{ env.TAG }} "
       - name: Get Release Tag from User
-        if: (github.repository == 'spacetelescope/jwst-pure-parallel') && (github.event_name == 'workflow_dispatch')
+        if: (github.repository == 'spacetelescope/roman-wfi-reference-pipeline') && (github.event_name == 'workflow_dispatch')
         run: |
           echo "TAG=${{ needs.validate.outputs.job_tag }}" >> $GITHUB_ENV
           echo "Release being made from ${{ env.TAG }} "
@@ -78,7 +78,7 @@ jobs:
 
   publish-to-testpypi:
     needs: [build]
-    if: (github.repository == 'spacetelescope/jwst-pure-parallel')
+    if: (github.repository == 'spacetelescope/roman-wfi-reference-pipeline')
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
@@ -107,7 +107,7 @@ jobs:
 
   publish-to-pypi:
     needs: [build, publish-to-testpypi]
-    if: (!cancelled() && github.repository == 'spacetelescope/jwst-pure-parallel')
+    if: (!cancelled() && github.repository == 'spacetelescope/roman-wfi-reference-pipeline')
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
