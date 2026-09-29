@@ -99,6 +99,8 @@ refpix:
     checks:
       dqinit: true
       saturation: true
+      darkdecay: true
+      wfi18transient: true
   pipeline:
     checks:
       refpix_spectral_slope: true
