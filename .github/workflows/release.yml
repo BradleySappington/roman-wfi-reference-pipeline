@@ -59,6 +59,14 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
+      - name: TEMP DEBUG Dump Context
+        run: |
+          echo "event_name=${{ github.event_name }}"
+          echo "event_action=${{ github.event.action }}"
+          echo "repository=${{ github.repository }}"
+          echo "ref=${{ github.ref }}"
+          echo "tag=${{ env.TAG }}"
+          echo "python_version=${{ vars.PYTHON_VERSION }}"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: 3
