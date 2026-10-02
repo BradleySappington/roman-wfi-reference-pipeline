@@ -78,6 +78,7 @@ jobs:
 
   publish-to-testpypi:
     needs: [build]
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
@@ -106,6 +107,7 @@ jobs:
 
   publish-to-pypi:
     needs: [build, publish-to-testpypi]
+    if: (!cancelled() && github.repository == 'spacetelescope/roman-wfi-reference-pipeline')
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
