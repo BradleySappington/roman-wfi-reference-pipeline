@@ -51,7 +51,7 @@ Notes:
 Using conda, please run the following in the specified order:
 ```
 conda activate wfirefpipe
-"rtb_db@git+https://grit.stsci.edu/roman/rtb-database"
+"pip install git+https://grit.stsci.edu/roman/rtb-database"
 pip install .
 conda install freetds
 ```
