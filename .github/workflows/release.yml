@@ -59,14 +59,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
-      - name: TEMP DEBUG Dump Context
-        run: |
-          echo "event_name=${{ github.event_name }}"
-          echo "event_action=${{ github.event.action }}"
-          echo "repository=${{ github.repository }}"
-          echo "ref=${{ github.ref }}"
-          echo "tag=${{ env.TAG }}"
-          echo "python_version=${{ vars.PYTHON_VERSION }}"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: 3
@@ -86,7 +78,7 @@ jobs:
 
   publish-to-testpypi:
     needs: [build]
-    if: (github.repository == 'spacetelescope/roman-wfi-reference-pipeline')
+    # if: (github.repository == 'spacetelescope/roman-wfi-reference-pipeline')
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
@@ -115,7 +107,7 @@ jobs:
 
   publish-to-pypi:
     needs: [build, publish-to-testpypi]
-    if: (!cancelled() && github.repository == 'spacetelescope/roman-wfi-reference-pipeline')
+    # if: (!cancelled() && github.repository == 'spacetelescope/roman-wfi-reference-pipeline')
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
