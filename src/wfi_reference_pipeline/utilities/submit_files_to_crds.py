@@ -103,7 +103,6 @@ class WFISubmit:
 
     def get_form_keys(self):
         """
-        # TODO SAPP - EVALUATE THIS
         Print available keys for the submission form.
         """
         print(self.crds_submission_form.help())
@@ -156,10 +155,8 @@ class WFISubmit:
         """
         Check if any string fields have the placeholder value 'User updated information.'
         """
-        placeholders = []
-        for key, value in self.submission_dict.items():
-            if isinstance(value, str) and value == "User updated information.":
-                placeholders.append(key)
+        default_str = "User updated information."
+        placeholders = [key for key, value in self.submission_dict.items() if value == default_str]
         if placeholders:
             raise ValueError(
                 f"The following have not been updated from their default value: {', '.join(placeholders)}"
@@ -179,14 +176,14 @@ class WFISubmit:
     def _set_env_variables(self):
         """
         # TODO Investigate why attribute self.server being set to "ops" did not deliver to ops or was over-written by the environment variable.
-
+            These ENV variables need to bet set before crds is imported.  Which means early in the pipeline
         Additionally, the user will need to refresh or regenerate a valid MAST Token that is also an environment
         variable
         https://auth.mast.stsci.edu/tokens
         export MAST_API_TOKEN="12345678StringExample@#$%!"
 
         TODO - ADD THIS NOTE TO THE README INSTALLATION INSTRUCTIONS, need MAST_API_TOKEN environment variable set in bash_profile or bashrc
-        TODO - do we want this value stored in config file?
+        TODO - do we want this value stored in config file? --- YES, also this wont work if CRDS is already imported
         """
 
         if self.server == "test":
