@@ -61,7 +61,7 @@ def _validate_config(config_file_dict, schema, config_location_str):
                         _dependency_check(config_dict, key, "use_dsn is set to false", config_location_str)
             else:
                 raise ValueError("Cannot have 'use_rtbdb' set in config file without rtb_db installed."
-                                 "Try 'pip install .[rtbdb]'")
+                                 "Try 'pip install git+https://grit.stsci.edu/roman/rtb-database'")
 
 
 

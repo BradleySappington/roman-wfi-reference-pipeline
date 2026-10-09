@@ -2,13 +2,13 @@
 name = "roman-wfi-reference-file-pipeline"
 description = "Reference file pipeline for the Roman WFI instrument."
 requires-python = ">=3.12"
+license-files = ["LICENSE"]
 authors = [
     { name = "STScI" },
 ]
 classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Astronomy",
-    "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
@@ -23,7 +23,7 @@ dependencies = [
     "pysiaf>=0.27.0,<0.28.0",
     "PyYAML>=6.0.1,<6.1.0",
     "requests>=2.32.0,<2.33.0",
-    "romancal>=1.0.0",
+    "romancal>=1.1.0",
     "scipy>=1.15.0,<1.17.0",
     "soc_roman_tools>=0.1.0,<0.2.0",
     "stpsf>=2.2.0",
@@ -37,9 +37,6 @@ docs = [
     "sphinx",
     "stsci_rtd_theme",
     "sphinx_automodapi",
-]
-rtbdb = [
-    "rtb_db@git+https://grit.stsci.edu/roman/rtb-database"
 ]
 test = [
     "pytest-cov",

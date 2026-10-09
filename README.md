@@ -39,17 +39,20 @@ Use example_config.yml in the same directory as a template.
 
 ## Installation with RTB database access
 
+RTB Database is utilized for automated processing of the reference file pipeline at STScI.  If you are not setting up automated instances at STScI then you will not need access to the RTB Database and should skip this section.
+
 To install with the RTB database on most platforms, the main additional step is to install the SQL driver packages with anaconda. This is the easiest way to ensure the correct SQL drivers are installed regardless of operating system. The one exception are Macs with M1 processors. For these installations, please see [macOS M1 installation](#notes-on-macos-machine-with-an-m1-chip-to-be-tested).
 
 
 Notes:
     1) You will need access to the Roman Grit group and might need to configure git on your machine to use a username and password that are registered with the Roman Grit group.
-    2) If you have 2FA enabled for your Grit account, you will need to use an access token to `pip install .[rtbdb]`.  Follow the instructions to [create an access token](https://grit.stsci.edu/help/user/profile/personal_access_tokens.md#create-a-personal-access-token).  This access token can now be used as your user password when prompted during the install.
+    2) If you have 2FA enabled for your Grit account, you will need to use an access token to install rtbdb.  Follow the instructions to [create an access token](https://grit.stsci.edu/help/user/profile/personal_access_tokens.md#create-a-personal-access-token).  This access token can now be used as your user password when prompted during the install.
 
 Using conda, please run the following in the specified order:
 ```
 conda activate wfirefpipe
-pip install .[rtbdb]
+"pip install git+https://grit.stsci.edu/roman/rtb-database"
+pip install .
 conda install freetds
 ```
 
