@@ -7,12 +7,10 @@ import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
-from typing import Union
 
 from crds.certify import certify_files
 from crds.core import heavy_client
 from crds.submit import Submission
-
 from wfi_reference_pipeline.constants import WFI_REF_TYPES
 
 from ..config.config_access import get_crds_submission_config
@@ -35,9 +33,9 @@ class SubmissionForm:
     etc_delivery: bool = field(default=False)
     calpipe_version: str = field(default="No")
     replacement_files: bool = field(default=False)
-    old_reference_files: Union[str, list] = field(default="")
+    old_reference_files: str | list = field(default="")
     replacing_badfiles: str = field(default="No")
-    jira_issue: Union[str, list] = field(default="")
+    jira_issue: str | list = field(default="")
     table_rows_changed: str = field(default="N/A")
     reprocess_affected: bool = field(default=False)
     modes_affected: str = field(default="")
